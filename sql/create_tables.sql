@@ -1,5 +1,5 @@
 -- ============================================================
--- BASE DE DATOS: Gestión e identificación de talento en vela
+-- BASE DE DATOS: Sailing Talent
 -- SGBD: PostgreSQL
 -- ============================================================
 
@@ -54,8 +54,7 @@ CREATE TABLE club (
 -- ============================================================
 
 CREATE TABLE deportista (
-    id_deportista INTEGER GENERATED ALWAYS AS IDENTITY,
-    dni VARCHAR(20),
+    dni VARCHAR(20) NOT NULL,
     nombre VARCHAR(100) NOT NULL,
     apellidos VARCHAR(150) NOT NULL,
     fecha_nacimiento DATE,
@@ -63,10 +62,7 @@ CREATE TABLE deportista (
     id_club INTEGER,
 
     CONSTRAINT pk_deportista
-        PRIMARY KEY (id_deportista),
-
-    CONSTRAINT uq_deportista_dni
-        UNIQUE (dni),
+        PRIMARY KEY (dni),
 
     CONSTRAINT chk_deportista_sexo
         CHECK (
@@ -93,25 +89,34 @@ CREATE TABLE registro_antropometrico (
     peso NUMERIC(5,2),
     envergadura NUMERIC(5,2),
     porcentaje_graso NUMERIC(5,2),
-    id_deportista INTEGER NOT NULL,
+    dni_deportista VARCHAR(20) NOT NULL,
 
     CONSTRAINT pk_registro_antropometrico
         PRIMARY KEY (id_registro),
 
     CONSTRAINT fk_registro_deportista
-        FOREIGN KEY (id_deportista)
-        REFERENCES deportista(id_deportista)
+        FOREIGN KEY (dni_deportista)
+        REFERENCES deportista(dni)
         ON UPDATE CASCADE
         ON DELETE CASCADE,
 
     CONSTRAINT chk_altura_positiva
-        CHECK (altura IS NULL OR altura > 0),
+        CHECK (
+            altura IS NULL
+            OR altura > 0
+        ),
 
     CONSTRAINT chk_peso_positivo
-        CHECK (peso IS NULL OR peso > 0),
+        CHECK (
+            peso IS NULL
+            OR peso > 0
+        ),
 
     CONSTRAINT chk_envergadura_positiva
-        CHECK (envergadura IS NULL OR envergadura > 0),
+        CHECK (
+            envergadura IS NULL
+            OR envergadura > 0
+        ),
 
     CONSTRAINT chk_porcentaje_graso
         CHECK (
@@ -138,7 +143,9 @@ CREATE TABLE clase (
         UNIQUE (nombre),
 
     CONSTRAINT chk_numero_tripulantes
-        CHECK (numero_tripulantes > 0)
+        CHECK (
+            numero_tripulantes > 0
+        )
 );
 
 
@@ -175,16 +182,16 @@ CREATE TABLE unidad_competitiva (
 -- ============================================================
 
 CREATE TABLE forma_parte (
-    id_deportista INTEGER NOT NULL,
+    dni_deportista VARCHAR(20) NOT NULL,
     id_unidad INTEGER NOT NULL,
     rol VARCHAR(30),
 
     CONSTRAINT pk_forma_parte
-        PRIMARY KEY (id_deportista, id_unidad),
+        PRIMARY KEY (dni_deportista, id_unidad),
 
     CONSTRAINT fk_forma_parte_deportista
-        FOREIGN KEY (id_deportista)
-        REFERENCES deportista(id_deportista)
+        FOREIGN KEY (dni_deportista)
+        REFERENCES deportista(dni)
         ON UPDATE CASCADE
         ON DELETE CASCADE,
 
@@ -225,7 +232,9 @@ CREATE TABLE competicion (
         ON DELETE RESTRICT,
 
     CONSTRAINT chk_competicion_fechas
-        CHECK (fecha_fin >= fecha_inicio),
+        CHECK (
+            fecha_fin >= fecha_inicio
+        ),
 
     CONSTRAINT chk_competicion_nivel
         CHECK (
@@ -278,5 +287,81 @@ CREATE TABLE participa_en (
         CHECK (
             puntos IS NULL
             OR puntos >= 0
+        )
+);
+
+
+-- ============================================================
+-- 10. TECNICO
+-- ============================================================
+
+CREATE TABLE tecnico (
+    dni VARCHAR(20) NOT NULL,
+    nombre VARCHAR(100) NOT NULL,
+    apellidos VARCHAR(150) NOT NULL,
+    titulacion VARCHAR(100),
+
+    CONSTRAINT pk_tecnico
+        PRIMARY KEY (dni)
+);
+
+
+-- ============================================================
+-- 11. INFORME
+-- ============================================================
+
+CREATE TABLE informe (
+    id_informe INTEGER GENERATED ALWAYS AS IDENTITY,
+    fecha DATE NOT NULL,
+
+    estrategia SMALLINT,
+    tactica SMALLINT,
+    trimado SMALLINT,
+    tecnica SMALLINT,
+
+    fortalezas TEXT,
+    debilidades TEXT,
+    recomendaciones TEXT,
+
+    dni_deportista VARCHAR(20) NOT NULL,
+    dni_tecnico VARCHAR(20) NOT NULL,
+
+    CONSTRAINT pk_informe
+        PRIMARY KEY (id_informe),
+
+    CONSTRAINT fk_informe_deportista
+        FOREIGN KEY (dni_deportista)
+        REFERENCES deportista(dni)
+        ON UPDATE CASCADE
+        ON DELETE CASCADE,
+
+    CONSTRAINT fk_informe_tecnico
+        FOREIGN KEY (dni_tecnico)
+        REFERENCES tecnico(dni)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT,
+
+    CONSTRAINT chk_informe_estrategia
+        CHECK (
+            estrategia IS NULL
+            OR estrategia BETWEEN 1 AND 5
+        ),
+
+    CONSTRAINT chk_informe_tactica
+        CHECK (
+            tactica IS NULL
+            OR tactica BETWEEN 1 AND 5
+        ),
+
+    CONSTRAINT chk_informe_trimado
+        CHECK (
+            trimado IS NULL
+            OR trimado BETWEEN 1 AND 5
+        ),
+
+    CONSTRAINT chk_informe_tecnica
+        CHECK (
+            tecnica IS NULL
+            OR tecnica BETWEEN 1 AND 5
         )
 );
