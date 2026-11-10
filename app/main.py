@@ -15,7 +15,7 @@ import pandas as pd
 import streamlit as st
 from sqlalchemy.exc import SQLAlchemyError
 
-from app import datos, candidatos
+from app import datos, candidatos, gestion_deportistas
 
 
 st.set_page_config(page_title="Sailing Talent", page_icon="⛵", layout="wide")
@@ -101,7 +101,7 @@ def configuracion():
         )
         if st.button("Actualizar datos", width="stretch"):
             st.session_state["lecturas"] = {}
-        st.caption("La aplicación solo consulta datos.")
+        st.caption("Consultas y gestión de fichas deportivas.")
         if proveedor == "cloudsql":
             st.caption("Mantén Cloud SQL Auth Proxy abierto en el puerto configurado.")
 
@@ -112,6 +112,9 @@ def configuracion():
                       "comparar_seleccion", "comparar_indicador", "cand_clase", "cand_sexo",
                       "cand_usar_edad", "cand_edad_min", "cand_edad_max", "cand_usar_altura", "cand_altura"):
             st.session_state.pop(clave, None)
+        for clave in list(st.session_state):
+            if clave.startswith("gestion_"):
+                st.session_state.pop(clave, None)
         st.session_state["proveedor_anterior"] = proveedor
 
     if st.session_state.get("fecha_anterior") != fecha:
@@ -182,7 +185,9 @@ def pagina_consulta():
     p = contenido["ficha"]
     st.subheader(f'{p["nombre"]} {p["apellidos"]}')
     st.write(f'{p["club"] or "Sin club"} · {p["federacion"] or "Sin federación"}')
-    st.caption(f'{p["sexo"] or "Sexo no registrado"} · Edad: {valor(p["edad"], " años")} · Clase activa: {p["clases_activas"] or "Sin unidad activa"}')
+    nacimiento = p.get("fecha_nacimiento")
+    anio_nacimiento = str(nacimiento.year) if nacimiento is not None else "Sin registrar"
+    st.caption(f'{p["sexo"] or "Sexo no registrado"} · Edad: {valor(p["edad"], " años")} · Año de nacimiento: {anio_nacimiento} · Clase activa: {p["clases_activas"] or "Sin unidad activa"}')
     a, b, c = st.columns(3)
     a.metric("Participaciones", p["participaciones"])
     b.metric("Mejor puesto general", valor(p["mejor_puesto"], "º"))
@@ -223,8 +228,18 @@ def pagina_candidatos():
             st.info("Comprueba que Cloud SQL Auth Proxy siga abierto.")
 
 
+def pagina_gestion():
+    try:
+        gestion_deportistas.mostrar(PROVEEDOR, motor(PROVEEDOR), lectura)
+    except (SQLAlchemyError, KeyError, ValueError, OSError):
+        st.error("No se pudo cargar la gestión de deportistas. Revisa la conexión y pulsa Actualizar datos.")
+        if PROVEEDOR == "cloudsql":
+            st.info("Comprueba que Cloud SQL Auth Proxy siga abierto.")
+
+
 PROVEEDOR, FECHA = configuracion()
 st.navigation([
     st.Page(pagina_consulta, title="Consulta de regatistas", default=True),
     st.Page(pagina_candidatos, title="Candidatos y comparación", url_path="candidatos"),
+    st.Page(pagina_gestion, title="Gestión de deportistas", url_path="gestion-deportistas"),
 ]).run()
