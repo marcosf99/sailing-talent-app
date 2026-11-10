@@ -73,3 +73,7 @@ def cargar_candidatos(motor, filtros, fecha):
 
 def comparar(motor, documentos, fecha):
     return queries.comparar_deportistas(motor, documentos, fecha_referencia=fecha)
+
+
+def cargar_federaciones(motor):
+    return queries.listar_federaciones(motor)
