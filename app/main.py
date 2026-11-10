@@ -15,7 +15,7 @@ import pandas as pd
 import streamlit as st
 from sqlalchemy.exc import SQLAlchemyError
 
-from app import datos
+from app import datos, candidatos
 
 
 st.set_page_config(page_title="Sailing Talent", page_icon="⛵", layout="wide")
@@ -79,11 +79,7 @@ def evolucion(filas):
     st.caption("Valores registrados; si hay varias mediciones en un día, se muestra la última.")
 
 
-def pagina_consulta():
-    st.title("Sailing Talent")
-    st.write("Consulta de regatistas y seguimiento de su trayectoria deportiva.")
-    st.caption("Primera versión de consulta · Datos de prueba ficticios")
-
+def configuracion():
     argumentos = argparse.ArgumentParser(add_help=False)
     argumentos.add_argument("--db-provider", choices=["supabase", "cloudsql"])
     args, _ = argumentos.parse_known_args()
@@ -105,16 +101,31 @@ def pagina_consulta():
         )
         if st.button("Actualizar datos", width="stretch"):
             st.session_state["lecturas"] = {}
-        st.caption("Esta pantalla solo consulta datos.")
+        st.caption("La aplicación solo consulta datos.")
         if proveedor == "cloudsql":
             st.caption("Mantén Cloud SQL Auth Proxy abierto en el puerto configurado.")
 
     # Evita conservar selecciones y registros de otro proveedor.
     if st.session_state.get("proveedor_anterior") != proveedor:
         st.session_state["lecturas"] = {}
-        for clave in ("regatista", "club", "indicador", "criterios"):
+        for clave in ("regatista", "club", "indicador", "criterios", "filtros_candidatos_aplicados",
+                      "comparar_seleccion", "comparar_indicador", "cand_clase", "cand_sexo",
+                      "cand_usar_edad", "cand_edad_min", "cand_edad_max", "cand_usar_altura", "cand_altura"):
             st.session_state.pop(clave, None)
         st.session_state["proveedor_anterior"] = proveedor
+
+    if st.session_state.get("fecha_anterior") != fecha:
+        st.session_state.pop("comparar_seleccion", None)
+        st.session_state["fecha_anterior"] = fecha
+    return proveedor, fecha
+
+
+def pagina_consulta():
+    st.title("Sailing Talent")
+    st.write("Consulta de regatistas y seguimiento de su trayectoria deportiva.")
+    st.caption("Primera versión de consulta · Datos de prueba ficticios")
+
+    proveedor, fecha = PROVEEDOR, FECHA
 
     try:
         conexion = motor(proveedor)
@@ -203,5 +214,17 @@ def pagina_consulta():
             st.info("El regatista no tiene unidades competitivas registradas.")
 
 
-# Navegación explícita: las páginas vacías de app/pages no se muestran todavía.
-st.navigation([st.Page(pagina_consulta, title="Consulta de regatistas", default=True)]).run()
+def pagina_candidatos():
+    try:
+        candidatos.mostrar(PROVEEDOR, FECHA, motor(PROVEEDOR), lectura)
+    except (SQLAlchemyError, KeyError, ValueError, OSError):
+        st.error("No se pudo completar la consulta de candidatos. Revisa la conexión y pulsa Actualizar datos.")
+        if PROVEEDOR == "cloudsql":
+            st.info("Comprueba que Cloud SQL Auth Proxy siga abierto.")
+
+
+PROVEEDOR, FECHA = configuracion()
+st.navigation([
+    st.Page(pagina_consulta, title="Consulta de regatistas", default=True),
+    st.Page(pagina_candidatos, title="Candidatos y comparación", url_path="candidatos"),
+]).run()

@@ -59,3 +59,17 @@ def agrupar_equipos(filas, fecha):
         )
     return [{**equipo, "Miembros": " · ".join(equipo["Miembros"])}
             for equipo in equipos.values()]
+
+
+def cargar_clases(motor):
+    return queries.listar_clases(motor)
+
+
+def cargar_candidatos(motor, filtros, fecha):
+    return queries.buscar_candidatos(
+        motor, fecha_referencia=fecha, limite=501, **filtros
+    )
+
+
+def comparar(motor, documentos, fecha):
+    return queries.comparar_deportistas(motor, documentos, fecha_referencia=fecha)
