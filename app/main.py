@@ -15,7 +15,7 @@ import pandas as pd
 import streamlit as st
 from sqlalchemy.exc import SQLAlchemyError
 
-from app import datos, candidatos, gestion_deportistas
+from app import datos, candidatos, gestion_deportistas, antropometria
 
 
 st.set_page_config(page_title="Sailing Talent", page_icon="⛵", layout="wide")
@@ -101,7 +101,7 @@ def configuracion():
         )
         if st.button("Actualizar datos", width="stretch"):
             st.session_state["lecturas"] = {}
-        st.caption("Consultas y gestión de fichas deportivas.")
+        st.caption("Consultas, fichas deportivas y mediciones.")
         if proveedor == "cloudsql":
             st.caption("Mantén Cloud SQL Auth Proxy abierto en el puerto configurado.")
 
@@ -113,7 +113,7 @@ def configuracion():
                       "cand_usar_edad", "cand_edad_min", "cand_edad_max", "cand_usar_altura", "cand_altura"):
             st.session_state.pop(clave, None)
         for clave in list(st.session_state):
-            if clave.startswith("gestion_"):
+            if clave.startswith(("gestion_", "antropo_")):
                 st.session_state.pop(clave, None)
         st.session_state["proveedor_anterior"] = proveedor
 
@@ -237,9 +237,19 @@ def pagina_gestion():
             st.info("Comprueba que Cloud SQL Auth Proxy siga abierto.")
 
 
+def pagina_antropometria():
+    try:
+        antropometria.mostrar(PROVEEDOR, motor(PROVEEDOR), lectura)
+    except (SQLAlchemyError, KeyError, ValueError, OSError):
+        st.error("No se pudo cargar el registro de mediciones. Revisa la conexión y pulsa Actualizar datos.")
+        if PROVEEDOR == "cloudsql":
+            st.info("Comprueba que Cloud SQL Auth Proxy siga abierto.")
+
+
 PROVEEDOR, FECHA = configuracion()
 st.navigation([
     st.Page(pagina_consulta, title="Consulta de regatistas", default=True),
     st.Page(pagina_candidatos, title="Candidatos y comparación", url_path="candidatos"),
     st.Page(pagina_gestion, title="Gestión de deportistas", url_path="gestion-deportistas"),
+    st.Page(pagina_antropometria, title="Registros antropométricos", url_path="registros-antropometricos"),
 ]).run()
