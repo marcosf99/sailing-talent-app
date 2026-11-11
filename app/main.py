@@ -17,6 +17,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app import datos, candidatos, gestion_deportistas, antropometria, unidades_competitivas, informes, importaciones, revision_participantes
 from services import edad_clases
+from app import consulta_informes
 
 
 st.set_page_config(page_title="Sailing Talent", page_icon="⛵", layout="wide")
@@ -137,7 +138,7 @@ def configuracion():
                       "cand_usar_edad", "cand_edad_min", "cand_edad_max", "cand_usar_altura", "cand_altura"):
             st.session_state.pop(clave, None)
         for clave in list(st.session_state):
-            if clave.startswith(("gestion_", "antropo_", "unidades_", "informes_", "importacion_", "revision_")):
+            if clave.startswith(("gestion_", "antropo_", "unidades_", "informes_", "importacion_", "revision_", "consulta_informe_", "comparar_informe_")):
                 st.session_state.pop(clave, None)
         st.session_state["proveedor_anterior"] = proveedor
 
@@ -220,7 +221,7 @@ def pagina_consulta():
         st.caption(f'Última medición: {p["fecha_medicion"].strftime("%d/%m/%Y")}')
     st.caption(f'Información consultada hasta el {fecha.strftime("%d/%m/%Y")}.')
 
-    resultados, fisico, equipos = st.tabs(["Resultados deportivos", "Evolución física", "Trayectoria y equipos"])
+    resultados, fisico, equipos, informes_tecnicos = st.tabs(["Resultados deportivos", "Evolución física", "Trayectoria y equipos", "Informes técnicos"])
     with resultados:
         st.subheader("Resultados deportivos")
         if contenido["resultados"]:
@@ -241,6 +242,9 @@ def pagina_consulta():
             st.dataframe(pd.DataFrame(historial), hide_index=True, width="stretch")
         else:
             st.info("El regatista no tiene unidades competitivas registradas.")
+    with informes_tecnicos:
+        consulta_informes.mostrar_historial(contenido.get('informes', []),
+            f'consulta_informe_{proveedor}_{dni}_{fecha.isoformat()}')
 
 
 def pagina_candidatos():

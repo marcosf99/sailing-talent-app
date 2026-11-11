@@ -1,8 +1,11 @@
 """Filtros exploratorios y comparación de perfiles, sin puntuaciones predictivas."""
+import altair as alt
 import pandas as pd
 import streamlit as st
+from sqlalchemy.exc import SQLAlchemyError
+from services.antropometria import ValidacionError
 
-from app import datos
+from app import datos, consulta_informes
 
 
 INDICADORES = {
@@ -13,6 +16,19 @@ INDICADORES = {
 
 def nombre(persona):
     return f'{persona["nombre"]} {persona["apellidos"]}'
+
+
+def edad_en_medicion(nacimiento, fecha):
+    """Años y meses completos en la fecha del punto, no en la consulta actual."""
+    if nacimiento is None or fecha < nacimiento:
+        return 'Edad no disponible'
+    meses = (fecha.year - nacimiento.year) * 12 + fecha.month - nacimiento.month
+    meses -= fecha.day < nacimiento.day
+    anos, meses = divmod(meses, 12)
+    etiqueta = f'{anos} ' + ('año' if anos == 1 else 'años')
+    if meses:
+        etiqueta += f' y {meses} ' + ('mes' if meses == 1 else 'meses')
+    return etiqueta
 
 
 def formatear(valor):
@@ -79,7 +95,7 @@ def mostrar(proveedor, fecha, motor, lectura):
     if filtros.get("altura_min") is not None:
         etiquetas.append(f'Altura ≥ {filtros["altura_min"]:g} cm')
     st.caption("Filtros aplicados: " + " · ".join(etiquetas))
-    st.caption(f'Fecha de consulta: {fecha.strftime("%d/%m/%Y")}. Se utiliza la última medición disponible hasta esa fecha.')
+    st.caption(f'Fecha de consulta: {fecha.strftime("%d/%m/%Y")}. Las tablas utilizan la última medición disponible; el gráfico antropométrico muestra el historial hasta esa fecha.')
     # La clave incluye proveedor, filtros y fecha para no mezclar datos.
     clave_filtros = tuple(sorted(filtros.items()))
     filas = lectura((proveedor, "candidatos", fecha, clave_filtros), datos.cargar_candidatos, motor, filtros, fecha)
@@ -122,20 +138,51 @@ def mostrar(proveedor, fecha, motor, lectura):
     st.subheader("Comparación de perfiles")
     st.dataframe(tabla_comparacion(comparados), hide_index=True, width="stretch")
     st.caption("Las mediciones pueden corresponder a fechas diferentes. El número de participaciones y el mejor puesto no son equivalentes a una valoración del nivel deportivo.")
-    disponibles = [campo for campo in INDICADORES if any(p.get(campo) is not None for p in comparados)]
-    if len(comparados) < 2 or not disponibles:
-        st.caption("El gráfico se muestra al seleccionar al menos dos perfiles con valores para comparar.")
+    mostrar_comparacion_fisica(proveedor, fecha, motor, lectura, comparados)
+    consulta_informes.mostrar_comparacion(proveedor, fecha, motor, lectura, comparados)
+
+
+def mostrar_comparacion_fisica(proveedor, fecha, motor, lectura, comparados):
+    st.subheader('Evolución antropométrica')
+    documentos = tuple(p['dni'] for p in comparados)
+    try:
+        historiales = lectura((proveedor, 'comparar_evolucion', fecha, documentos),
+                              datos.cargar_historiales_comparacion, motor, documentos, fecha)
+    except (SQLAlchemyError, KeyError, OSError, ValidacionError):
+        st.warning('No se pudo consultar la evolución antropométrica. Revisa la conexión y pulsa Actualizar datos.')
         return
+    etiquetas = [f'{nombre(p)} · {p["dni"]}' for p in comparados]
+    filas = [{**r, 'Regatista': etiqueta, 'Edad al medir': edad_en_medicion(p.get('fecha_nacimiento'), r['fecha'])}
+             for p, etiqueta in zip(comparados, etiquetas)
+             for r in historiales.get(p['dni'], []) if r['fecha'] <= fecha]
+    disponibles = [campo for campo in INDICADORES if any(r.get(campo) is not None and pd.notna(r[campo]) for r in filas)]
+    if not disponibles:
+        st.info('No hay mediciones antropométricas disponibles hasta la fecha de consulta para estos regatistas.')
+        return
+    if st.session_state.get('comparar_indicador') not in disponibles:
+        st.session_state.pop('comparar_indicador', None)
     indicador = st.selectbox("Medida para comparar", disponibles,
                              format_func=lambda c: INDICADORES[c], key="comparar_indicador")
-    conocidos = [p for p in comparados if p.get(indicador) is not None]
-    if len(conocidos) < 2:
-        st.info("Esta medida necesita valores conocidos en al menos dos perfiles para representar el gráfico.")
-        return
-    grafico = pd.DataFrame([{
-        "Regatista": f'{nombre(p)} · {p["dni"]}', INDICADORES[indicador]: float(p[indicador]),
-    } for p in conocidos])
-    st.bar_chart(grafico, x="Regatista", y=INDICADORES[indicador],
-                 x_label="Regatista", y_label=INDICADORES[indicador])
-    if len(conocidos) < len(comparados):
-        st.caption("Se omiten del gráfico los perfiles sin esta medida; permanecen en la tabla de comparación.")
+    conocidos = [r for r in filas if r.get(indicador) is not None and pd.notna(r[indicador])]
+    marco = pd.DataFrame([{'Regatista': r['Regatista'], 'Fecha': r['fecha'], 'Registro': r['id_registro'],
+                           'Valor': float(r[indicador]), 'Edad al medir': r['Edad al medir']} for r in conocidos])
+    # Igual criterio que la evolución individual: última medición conocida de
+    # cada indicador por día, sin perderla por otra medición parcial posterior.
+    marco = marco.sort_values(['Regatista', 'Fecha', 'Registro']).drop_duplicates(['Regatista', 'Fecha'], keep='last')
+    grafico = alt.Chart(marco).mark_line(point=True).encode(
+        x=alt.X('Fecha:T', axis=alt.Axis(format='%d/%m/%Y', tickCount=6, labelOverlap=True)),
+        y=alt.Y('Valor:Q', title=INDICADORES[indicador], scale=alt.Scale(zero=False)),
+        color=alt.Color('Regatista:N', scale=alt.Scale(domain=etiquetas, scheme='tableau10')),
+        order=alt.Order('Fecha:T'),
+        tooltip=['Regatista:N', alt.Tooltip('Fecha:T', format='%d/%m/%Y'),
+                 alt.Tooltip('Edad al medir:N', title='Edad en la medición'),
+                 alt.Tooltip('Valor:Q', title=INDICADORES[indicador], format='.2f')],
+    ).properties(height=320)
+    st.altair_chart(grafico, use_container_width=True)
+    st.caption('Cada color identifica a un regatista. Los puntos son mediciones registradas y las líneas unen sus fechas. Si hay varias mediciones del mismo indicador en un día, se muestra la de mayor identificador; no se promedian ni se rellenan valores ausentes.')
+    presentes = set(marco['Regatista'])
+    ausentes = [etiqueta for etiqueta in etiquetas if etiqueta not in presentes]
+    if ausentes:
+        st.caption('Sin registros de esta medida: ' + '; '.join(ausentes) + '.')
+    if any(len(grupo) == 1 for _, grupo in marco.groupby('Regatista')):
+        st.caption('Con una sola fecha registrada se muestra un punto; hacen falta dos fechas para trazar una evolución.')

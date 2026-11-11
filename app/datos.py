@@ -3,6 +3,7 @@ from sqlalchemy import event
 
 from database.database import crear_engine
 from database import queries
+from services import informes, antropometria
 
 
 def crear_motor_lectura(proveedor):
@@ -38,6 +39,7 @@ def cargar_ficha(motor, dni, fecha):
         "trayectoria": queries.consultar_trayectoria_deportista(
             motor, dni, fecha_referencia=fecha
         ),
+        "informes": informes.listar_informes(motor, dni, fecha_referencia=fecha),
     }
 
 
@@ -73,6 +75,10 @@ def cargar_candidatos(motor, filtros, fecha):
 
 def comparar(motor, documentos, fecha):
     return queries.comparar_deportistas(motor, documentos, fecha_referencia=fecha)
+
+
+def cargar_historiales_comparacion(motor, documentos, fecha):
+    return antropometria.historiales_para_comparar(motor, documentos, fecha)
 
 
 def cargar_federaciones(motor):

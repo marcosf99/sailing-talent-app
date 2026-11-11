@@ -1,7 +1,7 @@
 """Creación de informes técnicos según el modelo PostgreSQL existente."""
 from datetime import date
 
-from sqlalchemy import Date, text
+from sqlalchemy import Date, bindparam, text
 from sqlalchemy.exc import IntegrityError
 
 from services.deportistas import ValidacionError, ConflictoError
@@ -83,16 +83,49 @@ def listar_tecnicos(engine):
         """)).mappings()]
 
 
-def listar_informes(engine, dni):
+def _documentos_consulta(documentos):
+    if not isinstance(documentos, (list, tuple)) or not 1 <= len(documentos) <= 3:
+        raise ValidacionError('Selecciona entre uno y tres deportistas para consultar informes.')
+    salida = []
+    for dni in documentos:
+        if not isinstance(dni, str) or not dni.strip() or len(dni.strip()) > 20:
+            raise ValidacionError('Selecciona un documento válido para consultar informes.')
+        if dni.strip() not in salida:
+            salida.append(dni.strip())
+    return salida
+
+
+def _consultar_informes(engine, documentos, fecha_referencia):
+    if fecha_referencia is not None and type(fecha_referencia) is not date:
+        raise ValidacionError('La fecha de consulta debe ser una fecha válida.')
+    filtro_fecha = ' AND i.fecha<=:fecha' if fecha_referencia is not None else ''
+    consulta = text('''
+        SELECT i.id_informe, i.fecha, i.estrategia, i.tactica, i.trimado, i.tecnica,
+               i.fortalezas, i.debilidades, i.recomendaciones, i.dni_deportista,
+               i.dni_tecnico, t.nombre AS nombre_tecnico, t.apellidos AS apellidos_tecnico,
+               t.titulacion AS titulacion_tecnico
+        FROM public.informe i JOIN public.tecnico t ON t.dni=i.dni_tecnico
+        WHERE i.dni_deportista IN :documentos
+    ''' + filtro_fecha + ' ORDER BY i.fecha DESC, i.id_informe DESC').bindparams(
+        bindparam('documentos', expanding=True)).columns(fecha=Date())
     with engine.connect() as conexion:
-        return [dict(r) for r in conexion.execute(text("""
-            SELECT i.id_informe, i.fecha, i.estrategia, i.tactica, i.trimado, i.tecnica,
-                   i.fortalezas, i.debilidades, i.recomendaciones, i.dni_deportista,
-                   i.dni_tecnico, t.nombre AS nombre_tecnico, t.apellidos AS apellidos_tecnico
-            FROM public.informe i JOIN public.tecnico t ON t.dni=i.dni_tecnico
-            WHERE i.dni_deportista=:dni
-            ORDER BY i.fecha DESC, i.id_informe DESC
-        """).columns(fecha=Date()), {"dni": dni}).mappings()]
+        return [dict(r) for r in conexion.execute(consulta, {'documentos': documentos, 'fecha': fecha_referencia}).mappings()]
+
+
+def listar_informes(engine, dni, *, fecha_referencia=None):
+    """Historial completo o hasta la fecha inclusiva indicada; nunca escribe."""
+    return _consultar_informes(engine, _documentos_consulta([dni]), fecha_referencia)
+
+
+def informes_para_comparar(engine, documentos, fecha_referencia):
+    """Una lectura para hasta tres historiales, incluidos perfiles sin informes."""
+    documentos = _documentos_consulta(documentos)
+    if type(fecha_referencia) is not date:
+        raise ValidacionError('Indica la fecha de referencia para comparar informes.')
+    salida = {dni: [] for dni in documentos}
+    for informe in _consultar_informes(engine, documentos, fecha_referencia):
+        salida[informe['dni_deportista']].append(informe)
+    return salida
 
 
 def guardar_en_proveedor(proveedor, campos):

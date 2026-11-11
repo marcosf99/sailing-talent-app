@@ -38,7 +38,7 @@ class TestInterfaz(unittest.TestCase):
         at=self.app.run()
         self.assertEqual(len(at.exception),0)
         self.assertEqual(at.title[0].value,'Sailing Talent')
-        self.assertEqual([x.label for x in at.tabs],['Resultados deportivos','Evolución física','Trayectoria y equipos'])
+        self.assertEqual([x.label for x in at.tabs],['Resultados deportivos','Evolución física','Trayectoria y equipos','Informes técnicos'])
         self.assertEqual(at.metric[0].value,'2')
         self.assertEqual(len(at.dataframe),3)
         self.assertEqual(len(at.get('arrow_vega_lite_chart')),1)
@@ -104,5 +104,27 @@ class TestInterfaz(unittest.TestCase):
         with patch.object(edad_clases, 'cerrar_en_proveedor') as cerrar:
             self.app.run()
             cerrar.assert_not_called()
+
+    def test_informes_en_ficha_y_cambio_de_regatista_sin_mezclar(self):
+        from test_consulta_informes_interfaz import HISTORIAL
+        def ficha_con_informes(motor,dni,fecha):
+            return {**ficha(motor,dni,fecha),'informes':HISTORIAL if dni=='STDEMO0001' else []}
+        with patch.object(datos,'cargar_ficha',side_effect=ficha_con_informes):
+            self.app.run()
+            self.assertTrue(any(t.value=='Practicar salidas.' for t in self.app.text))
+            self.assertTrue(any(s.label=='Informe técnico para consultar' for s in self.app.selectbox))
+            self.app.selectbox(key='regatista').set_value('STDEMO0004').run()
+            self.assertTrue(any('No hay informes técnicos' in i.value for i in self.app.info))
+            self.assertFalse(any(t.value=='Practicar salidas.' for t in self.app.text))
+
+    def test_fecha_de_consulta_limita_informes_y_no_mantiene_detalle_futuro(self):
+        from test_consulta_informes_interfaz import HISTORIAL
+        def ficha_con_informes(motor,dni,fecha):
+            return {**ficha(motor,dni,fecha),'informes':[r for r in HISTORIAL if r['fecha']<=fecha]}
+        with patch.object(datos,'cargar_ficha',side_effect=ficha_con_informes):
+            self.app.run()
+            next(d for d in self.app.date_input if d.label=='Fecha de consulta').set_value(date(2026,9,1)).run()
+            self.assertTrue(any(t.value=='Trabajo por parejas.' for t in self.app.text))
+            self.assertFalse(any(t.value=='Practicar salidas.' for t in self.app.text))
 
 if __name__=='__main__':unittest.main(verbosity=2)
