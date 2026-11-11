@@ -32,6 +32,8 @@ class EvolucionComparada(unittest.TestCase):
         p2=patch.object(datos,'cargar_historiales_comparacion',side_effect=lambda *a:self.historiales)
         self.m=[p1.start(),p2.start()]
         self.addCleanup(p1.stop);self.addCleanup(p2.stop)
+        p3=patch.object(datos,'cargar_clases_comparacion',return_value={})
+        p3.start();self.addCleanup(p3.stop)
         self.at=AppTest.from_string(SCRIPT,default_timeout=15)
 
     def spec(self):return json.loads(self.at.get('arrow_vega_lite_chart')[0].proto.spec)

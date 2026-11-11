@@ -5,7 +5,8 @@ import streamlit as st
 from sqlalchemy.exc import SQLAlchemyError
 from services.antropometria import ValidacionError
 
-from app import datos, consulta_informes
+from app import datos, consulta_informes, evolucion
+from services.transiciones import edad_meses
 
 
 INDICADORES = {
@@ -152,7 +153,8 @@ def mostrar_comparacion_fisica(proveedor, fecha, motor, lectura, comparados):
         st.warning('No se pudo consultar la evolución antropométrica. Revisa la conexión y pulsa Actualizar datos.')
         return
     etiquetas = [f'{nombre(p)} · {p["dni"]}' for p in comparados]
-    filas = [{**r, 'Regatista': etiqueta, 'Edad al medir': edad_en_medicion(p.get('fecha_nacimiento'), r['fecha'])}
+    filas = [{**r, 'Regatista': etiqueta, 'Edad al medir': edad_en_medicion(p.get('fecha_nacimiento'), r['fecha']),
+              'Edad (meses)': edad_meses(p.get('fecha_nacimiento'), r['fecha'])}
              for p, etiqueta in zip(comparados, etiquetas)
              for r in historiales.get(p['dni'], []) if r['fecha'] <= fecha]
     disponibles = [campo for campo in INDICADORES if any(r.get(campo) is not None and pd.notna(r[campo]) for r in filas)]
@@ -163,22 +165,53 @@ def mostrar_comparacion_fisica(proveedor, fecha, motor, lectura, comparados):
         st.session_state.pop('comparar_indicador', None)
     indicador = st.selectbox("Medida para comparar", disponibles,
                              format_func=lambda c: INDICADORES[c], key="comparar_indicador")
+    por_edad = st.selectbox('Eje temporal', ['fecha', 'edad'],
+        index=1 if len(comparados)>1 and all(p.get('fecha_nacimiento') for p in comparados) else 0,
+        format_func=lambda e: 'Edad al medir' if e == 'edad' else 'Fechas del calendario', key='comparar_eje') == 'edad'
     conocidos = [r for r in filas if r.get(indicador) is not None and pd.notna(r[indicador])]
+    if por_edad:
+        sin_edad = [etiqueta for etiqueta in etiquetas if any(r['Regatista'] == etiqueta and r['Edad (meses)'] is None for r in conocidos)]
+        if sin_edad:
+            st.info('No se pueden situar por edad algunas mediciones de: ' + '; '.join(sin_edad)
+                    + '. Completa la fecha de nacimiento o usa Fechas del calendario. Los perfiles permanecen en la tabla.')
+        conocidos = [r for r in conocidos if r['Edad (meses)'] is not None]
+        st.caption('Las curvas se alinean por edad en la medición, aunque procedan de años distintos. La misma edad no implica la misma clase ni experiencia deportiva.')
+    else:
+        st.caption('Las fechas del calendario pueden corresponder a edades distintas. Elige Edad al medir para comparar el desarrollo a edades similares.')
+    if not conocidos:
+        st.info('No hay mediciones con edad conocida para esta comparación.')
+        return
     marco = pd.DataFrame([{'Regatista': r['Regatista'], 'Fecha': r['fecha'], 'Registro': r['id_registro'],
-                           'Valor': float(r[indicador]), 'Edad al medir': r['Edad al medir']} for r in conocidos])
+                           'Valor': float(r[indicador]), 'Edad al medir': r['Edad al medir'],
+                           'Edad (meses)': r['Edad (meses)']} for r in conocidos])
     # Igual criterio que la evolución individual: última medición conocida de
     # cada indicador por día, sin perderla por otra medición parcial posterior.
     marco = marco.sort_values(['Regatista', 'Fecha', 'Registro']).drop_duplicates(['Regatista', 'Fecha'], keep='last')
     grafico = alt.Chart(marco).mark_line(point=True).encode(
-        x=alt.X('Fecha:T', axis=alt.Axis(format='%d/%m/%Y', tickCount=6, labelOverlap=True)),
+        x=(alt.X('Edad (meses):Q', title='Edad al medir', scale=alt.Scale(zero=False),
+                 axis=alt.Axis(tickCount=6, tickMinStep=1, labelOverlap=True,
+                     labelExpr="floor(datum.value / 12) + ' a ' + (datum.value % 12) + ' m'")) if por_edad else
+           alt.X('Fecha:T', axis=alt.Axis(format='%d/%m/%Y', tickCount=6, labelOverlap=True))),
         y=alt.Y('Valor:Q', title=INDICADORES[indicador], scale=alt.Scale(zero=False)),
         color=alt.Color('Regatista:N', scale=alt.Scale(domain=etiquetas, scheme='tableau10')),
         order=alt.Order('Fecha:T'),
         tooltip=['Regatista:N', alt.Tooltip('Fecha:T', format='%d/%m/%Y'),
                  alt.Tooltip('Edad al medir:N', title='Edad en la medición'),
                  alt.Tooltip('Valor:Q', title=INDICADORES[indicador], format='.2f')],
-    ).properties(height=320)
-    st.altair_chart(grafico, use_container_width=True)
+    )
+    marcas = []
+    try:
+        clases = lectura((proveedor, 'comparar_clases', fecha, documentos),
+                         datos.cargar_clases_comparacion, motor, documentos, fecha)
+        presentes = set(marco['Regatista'])
+        for p, etiqueta in zip(comparados, etiquetas):
+            if etiqueta in presentes:
+                marcas.extend(evolucion.marcas(p, clases.get(p['dni'], []), fecha, etiqueta))
+    except (SQLAlchemyError, KeyError, OSError, ValidacionError):
+        st.warning('Se muestran las mediciones, pero no se pudieron consultar las fechas de incorporación a clases. Pulsa Actualizar datos para reintentarlo.')
+    st.altair_chart(evolucion.con_clases(grafico, marcas, por_edad=por_edad, etiquetas=etiquetas).properties(height=320), use_container_width=True)
+    if marcas:
+        st.caption('Las líneas discontinuas señalan la primera incorporación registrada a cada clase adicional, con el color del regatista. Pasa el cursor para ver nombre, clase, fecha y edad. No implican abandonar la clase anterior.')
     st.caption('Cada color identifica a un regatista. Los puntos son mediciones registradas y las líneas unen sus fechas. Si hay varias mediciones del mismo indicador en un día, se muestra la de mayor identificador; no se promedian ni se rellenan valores ausentes.')
     presentes = set(marco['Regatista'])
     ausentes = [etiqueta for etiqueta in etiquetas if etiqueta not in presentes]

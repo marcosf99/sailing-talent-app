@@ -420,3 +420,67 @@ valor y edad en años y meses completos en el momento de esa medicion. Se calcul
 desde la fecha de nacimiento registrada, independientemente de la edad actual
 o de la fecha de consulta. Sin nacimiento, o si la medicion es anterior a este,
 se muestra **Edad no disponible** y se conserva el punto sin inventar una edad.
+
+### Ampliación de clubes de Galicia
+
+`sql/sample_clubes_galicia.sql` añade once clubes identificados en las
+clasificaciones aportadas de Optimist e ILCA 4. Se ejecuta después de
+`sql/sample_data.sql`, tanto en Supabase como en Cloud SQL, y se puede repetir
+sin duplicar esos clubes. Con la carga base quedan 26 clubes, 15 gallegos.
+No requiere migraciones ni modifica los clubes existentes.
+
+En psql, desde la raíz del repositorio:
+
+```sql
+\i sql/sample_clubes_galicia.sql
+```
+
+En Supabase también puede pegarse el contenido del archivo en SQL Editor.
+Las abreviaturas observadas y las fuentes de contraste están en
+[docs/fuentes_clubes_galicia.md](docs/fuentes_clubes_galicia.md).
+
+`sql/update_localidades_clubes.sql` completa localidad y provincia de los
+quince clubes iniciales. Ejecutarlo después de `sql/sample_data.sql` en ambos
+proveedores, o pegarlo en SQL Editor de Supabase. Solo rellena campos vacíos y
+se puede repetir. Localidad se registra como municipio; los núcleos concretos
+y las fuentes están en
+[docs/fuentes_localidades_clubes.md](docs/fuentes_localidades_clubes.md).
+
+### Clases sobre la evolución antropométrica
+
+Se conserva **Consulta de regatistas → Trayectoria y equipos**, con su tabla y
+su línea temporal de unidades y regatas. La pantalla independiente de
+transiciones se retira de la navegación y el análisis se concentra en las
+curvas antropométricas existentes.
+
+En la ficha individual, las primeras incorporaciones a clases adicionales
+aparecen como líneas verticales discontinuas, con la clase identificada. El
+cursor muestra la fecha de inicio registrada y la edad. Se usa el primer
+inicio de unidad por clase: otra unidad de la misma clase no genera una marca.
+Las clases iniciales no se interpretan como cambios. Se conservan las
+incorporaciones simultáneas sin inventar una dirección entre clases y se
+excluyen inicios futuros o anteriores al nacimiento conocido.
+
+En **Candidatos y comparación**, cada marca utiliza el mismo color que las
+mediciones de su regatista. La opción **Eje temporal** permite comparar por
+**Edad al medir** o por **Fechas del calendario**. La edad es el valor inicial
+si se comparan al menos dos personas y conocemos todos sus nacimientos. El
+cursor conserva tanto la edad como la fecha real de cada medición y marca.
+
+La edad se calcula en meses completos y el eje se etiqueta en años y meses. Sin
+nacimiento válido no se inventa la edad: en ese eje se omiten esas mediciones
+con un aviso; el perfil permanece en la tabla y puede verse por calendario.
+Comparar por edad no supone que los regatistas compartan clase o experiencia.
+
+Las líneas físicas unen medidas registradas; no se crean medidas en las fechas
+de cambio ni se rellenan ausencias con cero. En una misma fecha e indicador
+se conserva el último valor conocido. Una única medición se representa como
+un punto. Las marcas pueden extender el eje para incluir incorporaciones
+anteriores o posteriores a las medidas, siempre hasta la fecha de consulta.
+Una incorporación no presupone abandonar otra clase ni cierra unidades.
+
+La comparación obtiene los primeros inicios de hasta tres deportistas en una
+sola consulta parametrizada, además de la lectura de mediciones existente.
+La caché es privada de sesión, por proveedor, fecha y selección. Si falla la
+lectura de las clases, se conservan las curvas y se informa de que no se han
+podido mostrar sus marcas. No requiere migraciones ni escribe en las bases.

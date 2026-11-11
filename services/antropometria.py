@@ -116,3 +116,30 @@ def historiales_para_comparar(engine, documentos, fecha_referencia):
         for fila in conexion.execute(consulta, {'documentos': distintos, 'fecha': fecha_referencia}).mappings():
             salida[fila['dni_deportista']].append(dict(fila))
     return salida
+
+
+def clases_para_comparar(engine, documentos, fecha_referencia):
+    """Primer inicio registrado por persona/clase en una sola consulta."""
+    if not isinstance(documentos, (list, tuple)) or not 1 <= len(documentos) <= 3:
+        raise ValidacionError('Selecciona entre uno y tres deportistas.')
+    if any(not isinstance(d, str) or not d.strip() or len(d.strip()) > 20 for d in documentos):
+        raise ValidacionError('Selecciona documentos válidos para consultar las clases.')
+    documentos = list(dict.fromkeys(d.strip() for d in documentos))
+    if type(fecha_referencia) is not date:
+        raise ValidacionError('Indica una fecha de consulta válida.')
+    consulta = text('''
+        SELECT fp.dni_deportista, cl.nombre AS clase, MIN(u.fecha_inicio) AS fecha_inicio
+        FROM public.forma_parte fp
+        JOIN public.deportista d ON d.dni=fp.dni_deportista
+        JOIN public.unidad_competitiva u ON u.id_unidad=fp.id_unidad
+        JOIN public.clase cl ON cl.id_clase=u.id_clase
+        WHERE fp.dni_deportista IN :documentos AND u.fecha_inicio<=:fecha
+          AND (d.fecha_nacimiento IS NULL OR u.fecha_inicio>=d.fecha_nacimiento)
+        GROUP BY fp.dni_deportista, cl.id_clase, cl.nombre
+        ORDER BY fp.dni_deportista, fecha_inicio, cl.nombre
+    ''').bindparams(bindparam('documentos', expanding=True)).columns(fecha_inicio=Date())
+    salida = {dni: [] for dni in documentos}
+    with engine.connect() as c:
+        for fila in c.execute(consulta, {'documentos': documentos, 'fecha': fecha_referencia}).mappings():
+            salida[fila['dni_deportista']].append(dict(fila))
+    return salida

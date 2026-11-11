@@ -12,12 +12,13 @@ if str(RAIZ) not in sys.path:
     sys.path.insert(0, str(RAIZ))
 
 import pandas as pd
+import altair as alt
 import streamlit as st
 from sqlalchemy.exc import SQLAlchemyError
 
 from app import datos, candidatos, gestion_deportistas, antropometria, unidades_competitivas, informes, importaciones, revision_participantes
 from services import edad_clases
-from app import consulta_informes
+from app import consulta_informes, transiciones, evolucion as graficos_evolucion
 
 
 st.set_page_config(page_title="Sailing Talent", page_icon="⛵", layout="wide")
@@ -80,7 +81,7 @@ def tabla(filas, columnas):
     return marco
 
 
-def evolucion(filas):
+def evolucion(filas, trayectoria=(), persona=None, fecha=None):
     st.subheader("Evolución física")
     if not filas:
         st.info("No hay mediciones registradas hasta la fecha de consulta.")
@@ -95,11 +96,23 @@ def evolucion(filas):
         st.info("Las mediciones registradas no contienen valores para representar.")
         return
     indicador = st.selectbox("Indicador", disponibles, key="indicador")
-    serie = marco[["Fecha", indicador]].dropna().drop_duplicates("Fecha", keep="last")
-    if len(serie) < 2:
-        st.caption("Se necesitan dos fechas con valores para mostrar la evolución.")
-        return
-    st.line_chart(serie, x="Fecha", y=indicador, x_label="Fecha", y_label=indicador)
+    persona = persona or {}
+    conocidos = [{'Fecha': r['fecha'], 'Valor': float(r[campo]), 'Registro': r.get('id_registro', i),
+                  'Edad al medir': candidatos.edad_en_medicion(persona.get('fecha_nacimiento'), r['fecha'])}
+                 for campo, titulo in columnas.items() if titulo == indicador
+                 for i, r in enumerate(filas) if r.get(campo) is not None]
+    serie = pd.DataFrame(conocidos).sort_values(['Fecha', 'Registro']).drop_duplicates('Fecha', keep='last')
+    grafico = alt.Chart(serie).mark_line(point=True).encode(
+        x=alt.X('Fecha:T', axis=alt.Axis(format='%d/%m/%Y', tickCount=6, labelOverlap=True)),
+        y=alt.Y('Valor:Q', title=indicador, scale=alt.Scale(zero=False)),
+        tooltip=[alt.Tooltip('Fecha:T', format='%d/%m/%Y'), 'Edad al medir:N', alt.Tooltip('Valor:Q', title=indicador)])
+    marcas = graficos_evolucion.marcas(persona, trayectoria, fecha or date.today(),
+        f"{persona.get('nombre', '')} {persona.get('apellidos', '')}".strip())
+    st.altair_chart(graficos_evolucion.con_clases(grafico, marcas).properties(height=320), use_container_width=True)
+    if marcas:
+        st.caption('Las líneas discontinuas señalan el primer inicio registrado en cada clase adicional. Pasa el cursor para ver fecha y edad; no implican abandonar la clase anterior.')
+    if len(serie) == 1:
+        st.caption('Con una sola medición se muestra un punto, sin estimar una evolución.')
     st.caption("Valores registrados; si hay varias mediciones en un día, se muestra la última.")
 
 
@@ -134,16 +147,19 @@ def configuracion():
     if st.session_state.get("proveedor_anterior") != proveedor:
         st.session_state["lecturas"] = {}
         for clave in ("regatista", "club", "indicador", "criterios", "filtros_candidatos_aplicados",
-                      "comparar_seleccion", "comparar_indicador", "cand_clase", "cand_sexo",
+                      "comparar_seleccion", "comparar_indicador", "comparar_eje", "cand_clase", "cand_sexo",
                       "cand_usar_edad", "cand_edad_min", "cand_edad_max", "cand_usar_altura", "cand_altura"):
             st.session_state.pop(clave, None)
         for clave in list(st.session_state):
-            if clave.startswith(("gestion_", "antropo_", "unidades_", "informes_", "importacion_", "revision_", "consulta_informe_", "comparar_informe_")):
+            if clave.startswith(("gestion_", "antropo_", "unidades_", "informes_", "importacion_", "revision_", "consulta_informe_", "comparar_informe_", "trans_")):
                 st.session_state.pop(clave, None)
         st.session_state["proveedor_anterior"] = proveedor
 
     if st.session_state.get("fecha_anterior") != fecha:
         st.session_state.pop("comparar_seleccion", None)
+        for clave in list(st.session_state):
+            if clave.startswith('trans_'):
+                st.session_state.pop(clave, None)
         st.session_state["fecha_anterior"] = fecha
     return proveedor, fecha
 
@@ -234,7 +250,7 @@ def pagina_consulta():
         else:
             st.info("No hay resultados deportivos hasta la fecha de consulta.")
     with fisico:
-        evolucion(contenido["mediciones"])
+        evolucion(contenido["mediciones"], contenido['trayectoria'], p, fecha)
     with equipos:
         st.subheader("Trayectoria por clases y equipos")
         historial = datos.agrupar_equipos(contenido["trayectoria"], fecha)
@@ -242,6 +258,7 @@ def pagina_consulta():
             st.dataframe(pd.DataFrame(historial), hide_index=True, width="stretch")
         else:
             st.info("El regatista no tiene unidades competitivas registradas.")
+        transiciones.linea_temporal(transiciones.persona_de_ficha(contenido, fecha), fecha)
     with informes_tecnicos:
         consulta_informes.mostrar_historial(contenido.get('informes', []),
             f'consulta_informe_{proveedor}_{dni}_{fecha.isoformat()}')
