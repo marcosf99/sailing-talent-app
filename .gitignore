@@ -27,3 +27,6 @@ env/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Documentos originales de importaciones (desarrollo local)
+.local/

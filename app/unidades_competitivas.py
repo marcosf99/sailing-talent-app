@@ -32,6 +32,7 @@ def mostrar(proveedor, motor, lectura):
     etiqueta = "Supabase" if proveedor == "supabase" else "Google Cloud SQL"
     st.info(f"Los cambios se guardarán únicamente en {etiqueta}.")
     st.caption("Un regatista no puede pertenecer a dos unidades de la misma clase con fechas solapadas. Las fechas de inicio y fin se consideran incluidas.")
+    st.caption("Las unidades permanecen abiertas hasta su cierre manual. Optimist es la excepción: al superar el año en que cumple 14, el cierre por edad se aplica al abrir la aplicación. Sin nacimiento registrado no se calcula el cierre.")
     mensaje = st.session_state.pop("unidades_guardado", None)
     if mensaje:
         st.success(mensaje)

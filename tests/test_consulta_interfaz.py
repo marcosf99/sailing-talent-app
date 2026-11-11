@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from streamlit.testing.v1 import AppTest
 from app import datos
+from services import edad_clases
 
 CLUBES=[dict(id_club=1,nombre='Portosín',federacion='Galicia'),dict(id_club=2,nombre='Vigo',federacion='Galicia')]
 PERSONAS=[dict(dni='STDEMO0001',nombre='Alba',apellidos='Lago Varela',club='Portosín'),dict(dni='STDEMO0004',nombre='Iago',apellidos='Rey Blanco',club='Vigo')]
@@ -27,6 +28,9 @@ class TestInterfaz(unittest.TestCase):
     def setUp(self):
         self.patches=[patch.dict(os.environ,{'DB_PROVIDER':'supabase'}),patch.object(datos,'crear_motor_lectura',side_effect=lambda p:p),patch.object(datos,'cargar_clubes',return_value=CLUBES),patch.object(datos,'buscar',side_effect=buscar),patch.object(datos,'cargar_ficha',side_effect=ficha)]
         for p in self.patches:p.start()
+        edad = patch.object(edad_clases, 'pendientes_por_edad', return_value=[])
+        self.edad = edad.start()
+        self.addCleanup(edad.stop)
         self.addCleanup(lambda:[p.stop() for p in reversed(self.patches)])
         self.app=AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'app' / 'main.py'),default_timeout=15)
 
@@ -87,5 +91,18 @@ class TestInterfaz(unittest.TestCase):
         at=self.app.run();at.selectbox(key='regatista').set_value('STDEMO0004').run()
         self.assertTrue(any('Año de nacimiento: Sin registrar' in c.value for c in at.caption))
         self.assertEqual(len(at.exception),0)
+
+    def test_cierres_edad_solo_si_vencidos_y_una_vez_por_dia(self):
+        self.edad.return_value = [{'id_unidad': 7}]
+        with patch.object(edad_clases, 'cerrar_en_proveedor', return_value={'cerradas': [7], 'incidencias': []}) as cerrar:
+            self.app.run()
+            self.app.run()
+            cerrar.assert_called_once_with('supabase')
+            self.edad.assert_called_once()
+
+    def test_no_se_escribe_para_programar_cierres_futuros(self):
+        with patch.object(edad_clases, 'cerrar_en_proveedor') as cerrar:
+            self.app.run()
+            cerrar.assert_not_called()
 
 if __name__=='__main__':unittest.main(verbosity=2)
