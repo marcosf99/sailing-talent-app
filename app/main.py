@@ -15,7 +15,7 @@ import pandas as pd
 import streamlit as st
 from sqlalchemy.exc import SQLAlchemyError
 
-from app import datos, candidatos, gestion_deportistas, antropometria, unidades_competitivas
+from app import datos, candidatos, gestion_deportistas, antropometria, unidades_competitivas, informes
 
 
 st.set_page_config(page_title="Sailing Talent", page_icon="⛵", layout="wide")
@@ -113,7 +113,7 @@ def configuracion():
                       "cand_usar_edad", "cand_edad_min", "cand_edad_max", "cand_usar_altura", "cand_altura"):
             st.session_state.pop(clave, None)
         for clave in list(st.session_state):
-            if clave.startswith(("gestion_", "antropo_", "unidades_")):
+            if clave.startswith(("gestion_", "antropo_", "unidades_", "informes_")):
                 st.session_state.pop(clave, None)
         st.session_state["proveedor_anterior"] = proveedor
 
@@ -255,6 +255,15 @@ def pagina_unidades():
             st.info("Comprueba que Cloud SQL Auth Proxy siga abierto.")
 
 
+def pagina_informes():
+    try:
+        informes.mostrar(PROVEEDOR, motor(PROVEEDOR), lectura)
+    except (SQLAlchemyError, KeyError, ValueError, OSError):
+        st.error("No se pudo cargar la creación de informes. Revisa la conexión y pulsa Actualizar datos.")
+        if PROVEEDOR == "cloudsql":
+            st.info("Comprueba que Cloud SQL Auth Proxy siga abierto.")
+
+
 PROVEEDOR, FECHA = configuracion()
 st.navigation([
     st.Page(pagina_consulta, title="Consulta de regatistas", default=True),
@@ -262,4 +271,5 @@ st.navigation([
     st.Page(pagina_gestion, title="Gestión de deportistas", url_path="gestion-deportistas"),
     st.Page(pagina_antropometria, title="Registros antropométricos", url_path="registros-antropometricos"),
     st.Page(pagina_unidades, title="Unidades competitivas", url_path="unidades-competitivas"),
+    st.Page(pagina_informes, title="Informes técnicos", url_path="informes-tecnicos"),
 ]).run()
