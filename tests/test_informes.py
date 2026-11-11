@@ -86,4 +86,51 @@ class PruebasInformes(unittest.TestCase):
         s.crear_informe(self.engine,{**self.campos,'dni_deportista':'D2'})
         self.assertEqual(len(self.filas()),1)
 
+    def test_historial_hasta_fecha_inclusiva_con_autor_y_titulacion(self):
+        primero=s.crear_informe(self.engine,{**self.campos,'fecha':date(2026,9,1)})
+        segundo=s.crear_informe(self.engine,self.campos)
+        s.crear_informe(self.engine,{**self.campos,'fecha':date(2026,10,21)})
+        informes=s.listar_informes(self.engine,'D1',fecha_referencia=date(2026,10,20))
+        self.assertEqual([i['id_informe'] for i in informes],[segundo,primero])
+        self.assertEqual(informes[0]['titulacion_tecnico'],'Técnico de vela')
+        self.assertEqual(informes[0]['recomendaciones'],'Practicar maniobras.')
+        self.assertEqual(s.listar_informes(self.engine,'D1',fecha_referencia=date(2026,8,31)),[])
+
+    def test_mismo_dia_conserva_todos_y_ultimo_es_id_mayor(self):
+        primero=s.crear_informe(self.engine,self.campos)
+        segundo=s.crear_informe(self.engine,{**self.campos,'dni_tecnico':'T2','tactica':None})
+        informes=s.listar_informes(self.engine,'D1',fecha_referencia=date(2026,10,20))
+        self.assertEqual([i['id_informe'] for i in informes],[segundo,primero])
+        self.assertIsNone(informes[0]['tactica'])
+        self.assertEqual(informes[0]['nombre_tecnico'],'Toni')
+
+    def test_comparacion_agrupa_sin_mezclar_deportistas_y_sin_informes(self):
+        primero=s.crear_informe(self.engine,self.campos)
+        segundo=s.crear_informe(self.engine,{**self.campos,'dni_deportista':'D2','fecha':date(2026,9,1)})
+        grupos=s.informes_para_comparar(self.engine,['D2','D1','SIN'],date(2026,10,20))
+        self.assertEqual(list(grupos),['D2','D1','SIN'])
+        self.assertEqual([i['id_informe'] for i in grupos['D2']],[segundo])
+        self.assertEqual([i['id_informe'] for i in grupos['D1']],[primero])
+        self.assertEqual(grupos['SIN'],[])
+
+    def test_comparacion_usa_una_consulta_y_no_escribe(self):
+        s.crear_informe(self.engine,self.campos)
+        operaciones=[]
+        @event.listens_for(self.engine,'before_cursor_execute')
+        def capturar(c,cur,sql,params,ctx,many):
+            operaciones.append(sql.strip().split()[0])
+        s.informes_para_comparar(self.engine,['D1','D2','D1'],date(2026,10,20))
+        self.assertEqual(operaciones,['SELECT'])
+
+    def test_consulta_valida_documentos_fecha_y_no_interpreta_sql(self):
+        s.crear_informe(self.engine,self.campos)
+        for documentos in ([],['D1']*4,'D1',[None],[' '],['X'*21]):
+            with self.subTest(documentos=documentos),self.assertRaises(s.ValidacionError):
+                s.informes_para_comparar(self.engine,documentos,date(2026,10,20))
+        for fecha in (None,'2026-10-20',True):
+            with self.subTest(fecha=fecha),self.assertRaises(s.ValidacionError):
+                s.informes_para_comparar(self.engine,['D1'],fecha)
+        self.assertEqual(s.listar_informes(self.engine,"' OR 1=1 --"),[])
+        self.assertEqual(len(self.filas()),1)
+
 if __name__=='__main__':unittest.main(verbosity=2)

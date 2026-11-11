@@ -31,6 +31,47 @@ class PruebasAntropometria(unittest.TestCase):
         with self.engine.connect() as c:
             return [dict(r) for r in c.execute(text('SELECT * FROM registro_antropometrico ORDER BY id_registro')).mappings()]
 
+    def test_historial_comparado_hasta_fecha_y_orden_cronologico(self):
+        ultimo=s.crear_registro(self.engine,self.campos)
+        primero=s.crear_registro(self.engine,{**self.campos,'fecha':date(2025,10,15),'altura':140})
+        s.crear_registro(self.engine,{**self.campos,'fecha':date(2026,10,16),'altura':150})
+        salida=s.historiales_para_comparar(self.engine,['DEMO002','DEMO001','SIN'],date(2026,10,15))
+        self.assertEqual(list(salida),['DEMO002','DEMO001','SIN'])
+        self.assertEqual([r['id_registro'] for r in salida['DEMO001']],[primero,ultimo])
+        self.assertEqual(salida['DEMO001'][1]['fecha'],date(2026,10,15))
+        self.assertEqual(salida['DEMO001'][1]['altura'],Decimal('148.00'))
+        self.assertEqual(salida['DEMO002'],[])
+        self.assertEqual(salida['SIN'],[])
+
+    def test_historial_preserva_mediciones_parciales_del_mismo_dia(self):
+        s.crear_registro(self.engine,self.campos)
+        s.crear_registro(self.engine,{**self.campos,'altura':None,'peso':40})
+        registros=s.historiales_para_comparar(self.engine,['DEMO001'],date(2026,10,15))['DEMO001']
+        self.assertEqual(len(registros),2)
+        self.assertIsNone(registros[1]['altura'])
+        self.assertEqual(registros[1]['peso'],40)
+
+    def test_historial_comparado_una_lectura_sin_escrituras(self):
+        s.crear_registro(self.engine,self.campos)
+        operaciones=[]
+        @event.listens_for(self.engine,'before_cursor_execute')
+        def capturar(c,cur,sql,params,ctx,many):operaciones.append(sql.strip().split()[0])
+        salida=s.historiales_para_comparar(self.engine,['DEMO001','DEMO002','DEMO001'],date(2026,10,15))
+        self.assertEqual(list(salida),['DEMO001','DEMO002'])
+        self.assertEqual(operaciones,['SELECT'])
+
+    def test_historial_valida_argumentos_y_sql_no_se_interpreta(self):
+        for documentos in ([],['DEMO001']*4,'DEMO001',[None],[' '],['X'*21]):
+            with self.subTest(documentos=documentos),self.assertRaises(s.ValidacionError):
+                s.historiales_para_comparar(self.engine,documentos,date(2026,10,15))
+        for fecha in (None,'2026-10-15',True):
+            with self.subTest(fecha=fecha),self.assertRaises(s.ValidacionError):
+                s.historiales_para_comparar(self.engine,['DEMO001'],fecha)
+        s.crear_registro(self.engine,self.campos)
+        salida=s.historiales_para_comparar(self.engine,["' OR 1=1 --"],date(2026,10,15))
+        self.assertEqual(salida,{"' OR 1=1 --":[]})
+        self.assertEqual(len(self.filas()),1)
+
     def test_registro_completo(self):
         identificador = s.crear_registro(self.engine, self.campos)
         self.assertEqual(self.filas()[0]['id_registro'], identificador)

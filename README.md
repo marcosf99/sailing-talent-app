@@ -360,3 +360,63 @@ python -m unittest discover -s tests -p 'test_revision_participantes*.py' -v
 Se utilizan fixtures ficticios, el esquema adaptado a SQLite y la interfaz de
 pruebas de Streamlit. El bloqueo concurrente real de PostgreSQL debe validarse
 tambien en integracion; las pruebas locales simulan una revision obsoleta.
+
+## Consulta y comparacion de informes tecnicos
+
+La ficha de **Consulta de regatistas** incorpora una pestaña **Informes tecnicos**.
+Muestra el historial hasta la fecha de consulta, con el mas reciente primero, y
+permite seleccionar un informe para consultar sus cuatro valoraciones (estrategia,
+tactica, trimado y tecnica), fortalezas, debilidades y recomendaciones, junto con
+fecha, tecnico y titulacion registrada. Se conservan todos los informes del mismo
+dia; el identificador distingue informes de un mismo tecnico y fecha. El orden
+inicial para fechas iguales es identificador descendente, sin inferir una hora
+de evaluacion que el modelo no registra.
+
+En **Candidatos y comparacion**, al seleccionar hasta tres deportistas, aparece la
+comparacion tecnica ademas de la fisica. Por defecto se usa el ultimo informe
+disponible de cada candidato hasta la fecha de consulta; el usuario puede elegir
+otro informe por candidato. Una tabla muestra fechas, autores y valores. El grafico
+de barras agrupadas compara las cuatro dimensiones en la misma escala de 1 a 5,
+con fechas y autores en la informacion de cada barra. Se necesitan valoraciones
+en al menos dos perfiles para mostrar el grafico.
+
+Los valores sin registrar se muestran vacios en las tablas y no generan barras:
+no se sustituyen por cero, ni se promedian informes de diferentes fechas o autores.
+Los candidatos sin informes permanecen en la tabla. La comparacion tecnica
+funciona aunque no haya mediciones antropometricas. Las valoraciones pertenecen
+a sus tecnicos; no se calcula una puntuacion global de talento.
+
+`services/informes.py` filtra las fechas en SQL y obtiene los historiales de los
+candidatos con una sola consulta parametrizada. La interfaz reutiliza el motor de
+lectura y la cache privada de la sesion, separada por proveedor, fecha y candidatos.
+Consultar o cambiar el informe seleccionado no guarda ni modifica informes.
+La creacion de informes sigue en su pantalla actual y vacia la cache al guardar.
+No hay cambios de esquema ni migraciones. Altair se declara como dependencia
+explicita para el grafico; ya formaba parte de las dependencias de Streamlit.
+
+### Evolucion antropometrica comparada
+
+En candidatos, el grafico fisico utiliza lineas temporales con puntos y un color
+por regatista, conservado al cambiar de indicador. Permite seleccionar altura,
+peso, envergadura o porcentaje graso, cada uno con sus propias unidades. Las
+tablas de perfiles siguen mostrando la ultima medicion; el grafico utiliza todo
+el historial disponible hasta la fecha de consulta, aunque la ultima medicion
+del perfil no contenga ese indicador.
+
+Con una sola fecha se representa un punto. Los perfiles sin valores para el
+indicador se identifican en un aviso y permanecen en la tabla. Los valores
+ausentes no se convierten en cero ni se trasladan a otras fechas. Cuando hay
+varias mediciones de un indicador en un mismo dia, se muestra la conocida de
+mayor identificador, sin promediar; otra medicion parcial de ese dia no borra
+un valor anterior registrado para el indicador.
+
+Los historiales de hasta tres candidatos se obtienen con una sola consulta
+parametrizada, con fechas filtradas en SQL y cache privada por proveedor, fecha
+y seleccion. Este cambio no modifica las mediciones ni requiere migraciones.
+La comparacion tecnica mantiene sus barras de valoraciones de 1 a 5.
+
+Al pasar el cursor por un punto antropometrico se muestran regatista, fecha,
+valor y edad en años y meses completos en el momento de esa medicion. Se calcula
+desde la fecha de nacimiento registrada, independientemente de la edad actual
+o de la fecha de consulta. Sin nacimiento, o si la medicion es anterior a este,
+se muestra **Edad no disponible** y se conserva el punto sin inventar una edad.

@@ -2,7 +2,7 @@
 from datetime import date
 from decimal import Decimal, InvalidOperation
 
-from sqlalchemy import Date, text
+from sqlalchemy import Date, Numeric, bindparam, text
 from sqlalchemy.exc import IntegrityError
 
 from services.deportistas import ValidacionError, ConflictoError
@@ -90,3 +90,29 @@ def guardar_en_proveedor(proveedor, campos):
         return crear_registro(motor, campos)
     finally:
         motor.dispose()
+
+
+def historiales_para_comparar(engine, documentos, fecha_referencia):
+    """Una lectura cronológica de hasta tres deportistas hasta la fecha indicada."""
+    if not isinstance(documentos, (list, tuple)) or not 1 <= len(documentos) <= 3:
+        raise ValidacionError('Selecciona entre uno y tres deportistas para consultar su evolución.')
+    if type(fecha_referencia) is not date:
+        raise ValidacionError('Indica una fecha de consulta válida.')
+    distintos = []
+    for dni in documentos:
+        if not isinstance(dni, str) or not dni.strip() or len(dni.strip()) > 20:
+            raise ValidacionError('Selecciona documentos válidos para consultar la evolución.')
+        if dni.strip() not in distintos:
+            distintos.append(dni.strip())
+    consulta = text('''
+        SELECT id_registro, dni_deportista, fecha, altura, peso, envergadura, porcentaje_graso
+        FROM public.registro_antropometrico
+        WHERE dni_deportista IN :documentos AND fecha<=:fecha
+        ORDER BY fecha, id_registro
+    ''').bindparams(bindparam('documentos', expanding=True)).columns(
+        fecha=Date(), **{campo: Numeric(5, 2) for campo in MEDIDAS})
+    salida = {dni: [] for dni in distintos}
+    with engine.connect() as conexion:
+        for fila in conexion.execute(consulta, {'documentos': distintos, 'fecha': fecha_referencia}).mappings():
+            salida[fila['dni_deportista']].append(dict(fila))
+    return salida
