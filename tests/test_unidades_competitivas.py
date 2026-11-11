@@ -3,6 +3,7 @@ from datetime import date,timedelta
 import unittest
 from sqlalchemy import create_engine,event,text
 from services import unidades_competitivas as s
+from services import edad_clases as edades
 
 class PruebasUnidades(unittest.TestCase):
     def setUp(self):
@@ -99,5 +100,70 @@ class PruebasUnidades(unittest.TestCase):
         self.assertEqual(filas[0]['fecha_inicio'],date(2026,1,1))
         self.assertEqual(len(filas[0]['miembros']),2)
         self.assertEqual(s.listar_unidades(self.engine,1),[])
+
+    def test_optimist_no_guarda_limite_futuro(self):
+        s.crear_unidad(self.engine,self.campos)
+        self.assertIsNone(self.consulta('SELECT fecha_fin FROM unidad_competitiva')[0]['fecha_fin'])
+        self.assertEqual(edades.pendientes_por_edad(self.engine,date(2026,12,31)),[])
+
+    def test_limite_es_ano_14_no_el_cumpleanos(self):
+        self.assertEqual(edades.limite_edad('Optimist',date(2012,12,30)),date(2026,12,31))
+        self.assertEqual(edades.limite_edad('Optimist',date(2012,1,1)),date(2026,12,31))
+        self.assertEqual(edades.limite_edad('Optimist',date(2012,2,29)),date(2026,12,31))
+        self.assertIsNone(edades.fin_vencido(date(2026,12,31),date(2026,12,31)))
+        self.assertEqual(edades.fin_vencido(date(2026,12,31),date(2027,1,1)),date(2026,12,31))
+
+    def test_cierre_por_edad_solo_cuando_ha_vencido(self):
+        ident=s.crear_unidad(self.engine,self.campos)
+        self.assertEqual(edades.cerrar_vencidas(self.engine,date(2026,11,11))['cerradas'],[])
+        self.assertIsNone(self.consulta('SELECT fecha_fin FROM unidad_competitiva')[0]['fecha_fin'])
+        resultado=edades.cerrar_vencidas(self.engine,date(2027,1,1))
+        self.assertEqual(resultado['cerradas'],[ident])
+        self.assertEqual(self.consulta('SELECT fecha_fin FROM unidad_competitiva')[0]['fecha_fin'],'2026-12-31')
+        self.assertEqual(edades.cerrar_vencidas(self.engine,date(2027,1,2))['cerradas'],[])
+
+    def test_cierre_manual_anterior_no_se_sobrescribe(self):
+        ident=s.crear_unidad(self.engine,self.campos)
+        s.finalizar_unidad(self.engine,ident,date(2026,5,1))
+        self.assertEqual(edades.cerrar_vencidas(self.engine,date(2027,1,1))['cerradas'],[])
+        self.assertEqual(self.consulta('SELECT fecha_fin FROM unidad_competitiva')[0]['fecha_fin'],'2026-05-01')
+
+    def test_sin_nacimiento_y_otras_clases_no_cierran_por_edad(self):
+        s.crear_unidad(self.engine,{**self.campos,'patron':'D3'})
+        s.crear_unidad(self.engine,{**self.campos,'id_clase':3})
+        self.assertEqual(edades.cerrar_vencidas(self.engine,date(2035,1,1))['cerradas'],[])
+        self.assertTrue(all(u['fecha_fin'] is None for u in self.consulta('SELECT fecha_fin FROM unidad_competitiva')))
+
+    def test_edad_incompatible_no_crea_unidad(self):
+        with self.engine.begin() as c:
+            c.exec_driver_sql("UPDATE deportista SET fecha_nacimiento='2011-12-30' WHERE dni='D1'")
+        with self.assertRaisesRegex(s.ValidacionError,'Optimist'):
+            s.crear_unidad(self.engine,self.campos)
+        self.assertEqual(self.consulta('SELECT * FROM unidad_competitiva'),[])
+        s.crear_unidad(self.engine,{**self.campos,'id_clase':3})
+        self.assertIsNone(self.consulta('SELECT fecha_fin FROM unidad_competitiva')[0]['fecha_fin'])
+
+    def test_unidad_historica_optimist_con_limite_ya_pasado(self):
+        s.crear_unidad(self.engine,{**self.campos,'patron':'D2','fecha_inicio':date(2025,1,1)})
+        self.assertEqual(self.consulta('SELECT fecha_fin FROM unidad_competitiva')[0]['fecha_fin'],'2025-12-31')
+
+    def test_cierre_edad_preserva_resultados_incompatibles_y_avisa(self):
+        ident=s.crear_unidad(self.engine,self.campos)
+        with self.engine.begin() as c:
+            c.exec_driver_sql("INSERT INTO competicion VALUES (1,'2027-01-03')")
+            c.execute(text('INSERT INTO participa_en VALUES (:u,1,2)'),{'u':ident})
+        resultado=edades.cerrar_vencidas(self.engine,date(2027,1,4))
+        self.assertEqual(resultado['cerradas'],[])
+        self.assertEqual(len(resultado['incidencias']),1)
+        self.assertIsNone(self.consulta('SELECT fecha_fin FROM unidad_competitiva')[0]['fecha_fin'])
+        self.assertEqual(len(self.consulta('SELECT * FROM participa_en')),1)
+
+    def test_cierre_edad_no_deja_fin_anterior_inicio(self):
+        with self.engine.begin() as c:
+            c.exec_driver_sql("INSERT INTO unidad_competitiva VALUES (1,'2027-01-01',NULL,1)")
+            c.exec_driver_sql("INSERT INTO forma_parte VALUES ('D1',1,'Patron')")
+        resultado=edades.cerrar_vencidas(self.engine,date(2027,1,4))
+        self.assertEqual(resultado['cerradas'],[])
+        self.assertEqual(len(resultado['incidencias']),1)
 
 if __name__=='__main__':unittest.main(verbosity=2)

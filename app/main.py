@@ -15,7 +15,8 @@ import pandas as pd
 import streamlit as st
 from sqlalchemy.exc import SQLAlchemyError
 
-from app import datos, candidatos, gestion_deportistas, antropometria, unidades_competitivas, informes
+from app import datos, candidatos, gestion_deportistas, antropometria, unidades_competitivas, informes, importaciones, revision_participantes
+from services import edad_clases
 
 
 st.set_page_config(page_title="Sailing Talent", page_icon="⛵", layout="wide")
@@ -39,6 +40,28 @@ def lectura(clave, funcion, *argumentos):
             cache.clear()
         cache[clave] = (ahora, funcion(*argumentos))
     return cache[clave][1]
+
+
+def revisar_cierres_por_edad(proveedor):
+    """Comprobar el día real, independientemente de la fecha histórica de consulta."""
+    clave = 'edad_revisada_' + proveedor
+    avisos = 'edad_incidencias_' + proveedor
+    if st.session_state.get(clave) != date.today():
+        try:
+            pendientes = edad_clases.pendientes_por_edad(motor(proveedor))
+            if pendientes:
+                resultado = edad_clases.cerrar_en_proveedor(proveedor)
+                st.session_state[avisos] = resultado['incidencias']
+                if resultado['cerradas']:
+                    st.session_state['lecturas'] = {}
+            else:
+                st.session_state[avisos] = []
+            st.session_state[clave] = date.today()
+        except (SQLAlchemyError, KeyError, OSError):
+            st.warning('No se pudieron comprobar los cierres por edad de Optimist. Revisa la conexión.')
+            return
+    for aviso in st.session_state.get(avisos, []):
+        st.warning(aviso)
 
 
 def valor(numero, sufijo=""):
@@ -101,6 +124,7 @@ def configuracion():
         )
         if st.button("Actualizar datos", width="stretch"):
             st.session_state["lecturas"] = {}
+            st.session_state.pop('edad_revisada_' + proveedor, None)
         st.caption("Consultas y gestión deportiva.")
         if proveedor == "cloudsql":
             st.caption("Mantén Cloud SQL Auth Proxy abierto en el puerto configurado.")
@@ -113,7 +137,7 @@ def configuracion():
                       "cand_usar_edad", "cand_edad_min", "cand_edad_max", "cand_usar_altura", "cand_altura"):
             st.session_state.pop(clave, None)
         for clave in list(st.session_state):
-            if clave.startswith(("gestion_", "antropo_", "unidades_", "informes_")):
+            if clave.startswith(("gestion_", "antropo_", "unidades_", "informes_", "importacion_", "revision_")):
                 st.session_state.pop(clave, None)
         st.session_state["proveedor_anterior"] = proveedor
 
@@ -264,7 +288,22 @@ def pagina_informes():
             st.info("Comprueba que Cloud SQL Auth Proxy siga abierto.")
 
 
+def pagina_importaciones():
+    try:
+        importaciones.mostrar(PROVEEDOR, motor(PROVEEDOR), lectura)
+    except (SQLAlchemyError, KeyError, ValueError, OSError):
+        st.error("No se pudo abrir la importación de clasificaciones. Revisa la conexión y la configuración de la base seleccionada.")
+
+
+def pagina_revision():
+    try:
+        revision_participantes.mostrar(PROVEEDOR, motor(PROVEEDOR), lectura)
+    except (SQLAlchemyError, KeyError, ValueError, OSError):
+        st.error("No se pudo abrir la revisión de participantes. Comprueba la conexión y actualiza los datos.")
+
+
 PROVEEDOR, FECHA = configuracion()
+revisar_cierres_por_edad(PROVEEDOR)
 st.navigation([
     st.Page(pagina_consulta, title="Consulta de regatistas", default=True),
     st.Page(pagina_candidatos, title="Candidatos y comparación", url_path="candidatos"),
@@ -272,4 +311,6 @@ st.navigation([
     st.Page(pagina_antropometria, title="Registros antropométricos", url_path="registros-antropometricos"),
     st.Page(pagina_unidades, title="Unidades competitivas", url_path="unidades-competitivas"),
     st.Page(pagina_informes, title="Informes técnicos", url_path="informes-tecnicos"),
+    st.Page(pagina_importaciones, title="Importar clasificaciones", url_path="importar-clasificaciones"),
+    st.Page(pagina_revision, title="Revisión de participantes", url_path="revision-participantes"),
 ]).run()

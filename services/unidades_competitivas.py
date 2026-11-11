@@ -5,6 +5,7 @@ from sqlalchemy import Date, bindparam, text
 from sqlalchemy.exc import IntegrityError
 
 from services.deportistas import ValidacionError, ConflictoError
+from services.edad_clases import validar_edad, fin_vencido
 
 
 def _fecha(valor, etiqueta):
@@ -54,22 +55,24 @@ def crear_unidad(engine, campos):
             for persona in personas:
                 if persona["fecha_nacimiento"] and inicio < persona["fecha_nacimiento"]:
                     raise ValidacionError("La unidad no puede comenzar antes del nacimiento de sus miembros.")
+            limite = validar_edad(fila['nombre'], personas, inicio)
             # La nueva unidad no tiene fecha final: cualquier unidad de la misma
             # clase que termine después del inicio produce solapamiento.
+            filtro_limite = ' AND u.fecha_inicio<=:limite' if limite else ''
             consulta = text("""
                 SELECT fp.dni_deportista, u.id_unidad
                 FROM public.forma_parte fp
                 JOIN public.unidad_competitiva u ON u.id_unidad=fp.id_unidad
                 WHERE fp.dni_deportista IN :documentos AND u.id_clase=:clase
                   AND (u.fecha_fin IS NULL OR u.fecha_fin>=:inicio)
-            """).bindparams(bindparam("documentos", expanding=True))
-            conflicto = conexion.execute(consulta, {"documentos": miembros, "clase": clase, "inicio": inicio}).first()
+            """ + filtro_limite).bindparams(bindparam("documentos", expanding=True))
+            conflicto = conexion.execute(consulta, {"documentos": miembros, "clase": clase, "inicio": inicio, "limite": limite}).first()
             if conflicto:
                 raise ConflictoError("Algún miembro ya pertenece a una unidad de esta clase con fechas solapadas. Finaliza la anterior o revisa la fecha de inicio.")
             identificador = conexion.execute(text("""
                 INSERT INTO public.unidad_competitiva (fecha_inicio, fecha_fin, id_clase)
-                VALUES (:inicio, NULL, :clase) RETURNING id_unidad
-            """), {"inicio": inicio, "clase": clase}).scalar_one()
+                VALUES (:inicio, :fin, :clase) RETURNING id_unidad
+            """), {"inicio": inicio, "fin": fin_vencido(limite), "clase": clase}).scalar_one()
             pertenencias = [{"dni": patron, "unidad": identificador, "rol": "Patron"}]
             if tripulante:
                 pertenencias.append({"dni": tripulante, "unidad": identificador, "rol": "Tripulante"})
