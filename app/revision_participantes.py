@@ -5,7 +5,7 @@ import pandas as pd
 import streamlit as st
 from sqlalchemy.exc import SQLAlchemyError
 
-from app import datos
+from app import datos, revision_lotes, datos_pendientes
 from services import importaciones as borradores
 from services import revision_participantes as servicio
 from services import resultados_importados as resultados
@@ -147,6 +147,8 @@ def _mostrar(proveedor, motor, lectura, pantalla):
     if not editable:
         st.warning('Este borrador está cerrado para cambios de identidad.')
     datos_regata = _mostrar_resultados(proveedor, revision, pantalla)
+    revision_lotes.mostrar(proveedor, motor, lectura, revision, clubes,
+                           lambda mensaje: _exito(mensaje, pantalla), datos_regata=datos_regata)
     with st.expander('Participantes seleccionados'):
         st.dataframe(pd.DataFrame([{'Puesto': p['fila']['posicion_general'], 'Vela': p['fila']['numero_vela_original'],
                                     'Nombre en la fuente': p['nombre_original'], 'Club en la fuente': p['club_original'],
@@ -174,7 +176,10 @@ def _mostrar(proveedor, motor, lectura, pantalla):
                     st.error('No se pudo confirmar la incorporación. Actualiza la revisión antes de reintentar.')
                 else:
                     _exito('Participante añadido a la revisión. Su ficha definitiva todavía está pendiente.', pantalla)
-    solo_pendientes = st.checkbox('Mostrar solo identidades pendientes', value=False, key=f'revision_solo_pendientes_{identificador}')
+    datos_pendientes.mostrar(proveedor,motor,lectura)
+    if not st.checkbox('Revisar una identidad individual · coincidencias dudosas o correcciones', key='revision_mostrar_individual'):
+        return
+    solo_pendientes = st.checkbox('Mostrar solo identidades pendientes', value=True, key=f'revision_solo_pendientes_{identificador}')
     visibles = [p for p in personas if not solo_pendientes or p['dni_deportista_confirmado'] is None]
     if not visibles:
         st.info('No quedan participantes con este filtro. Si faltan miembros, completa las embarcaciones indicadas arriba.')
@@ -239,7 +244,7 @@ def _mostrar(proveedor, motor, lectura, pantalla):
                   fecha_nacimiento=p['fecha_nacimiento_propuesta'], sexo=p['sexo_propuesto'])
     if accion in ('crear', 'pendiente'):
         nombre_inicial, apellidos_iniciales = _nombre_inicial(p)
-        st.caption('Nombre y apellidos precargados de la clasificación: revisa su separación, especialmente en nombres compuestos. Puedes corregirlos antes de guardar. El documento es obligatorio para crear la ficha.')
+        st.caption('Nombre y apellidos precargados de la clasificación: revisa su separación, especialmente en nombres compuestos. El DNI es opcional: si lo dejas vacío se asignará un identificador provisional TEMP-, editable después desde Gestión de deportistas.')
         a, b = st.columns(2)
         campos['dni'] = a.text_input('DNI / documento', value=p['documento_propuesto'] or '', max_chars=20, key=prefijo + 'dni', disabled=not editable)
         campos['nombre'] = b.text_input('Nombre', value=nombre_inicial, max_chars=100, key=prefijo + 'nombre', disabled=not editable)

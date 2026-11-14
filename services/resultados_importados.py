@@ -112,12 +112,35 @@ def _competicion(conexion, imp, campos):
     '''), {**campos, 'nivel': imp['nivel'], 'clase': imp['id_clase']}).scalar_one()
 
 
-def _unidad(conexion, imp, campos, miembros):
+def _anticipar_unidad(conexion, unidad, roles, clase, inicio, fin):
+    """Amplía hacia atrás el mismo equipo, sin unir etapas ni cambiar su cierre."""
+    u = conexion.execute(text('SELECT * FROM public.unidad_competitiva WHERE id_unidad=:id FOR UPDATE')
+                         .columns(fecha_inicio=Date(), fecha_fin=Date()), {'id': unidad}).mappings().first()
+    actuales = {r['dni_deportista']: r['rol'] for r in conexion.execute(text(
+        'SELECT dni_deportista, rol FROM public.forma_parte WHERE id_unidad=:id'), {'id': unidad}).mappings()}
+    if u is None or actuales != roles or (u['fecha_fin'] is not None and u['fecha_fin'] < fin):
+        raise ConflictoError('La unidad posterior tiene otros miembros, roles o un cierre incompatible. Revisa sus equipos.')
+    conflicto = conexion.execute(text('''SELECT DISTINCT u.id_unidad FROM public.unidad_competitiva u
+        JOIN public.forma_parte fp ON fp.id_unidad=u.id_unidad
+        WHERE u.id_clase=:clase AND fp.dni_deportista IN :dnis AND u.id_unidad<>:id
+          AND u.fecha_inicio<=:anterior AND (u.fecha_fin IS NULL OR u.fecha_fin>=:inicio)
+    ''').bindparams(bindparam('dnis', expanding=True)),
+        {'clase': clase, 'dnis': sorted(roles), 'id': unidad, 'anterior': u['fecha_inicio'], 'inicio': inicio}).first()
+    if conflicto:
+        raise ConflictoError('Adelantar el inicio solaparía otra etapa de esta clase. Revisa sus equipos antes de incorporar.')
+    if inicio < u['fecha_inicio']:
+        conexion.execute(text('UPDATE public.unidad_competitiva SET fecha_inicio=:inicio WHERE id_unidad=:id'),
+                         {'inicio': inicio, 'id': unidad})
+    return unidad
+
+
+def _unidad(conexion, imp, campos, miembros, *, personas=None):
     roles = {p['dni_deportista_confirmado']: ('Patron' if imp['numero_tripulantes'] == 1 else p['rol_propuesto'])
              for p in miembros}
     consulta = text('''SELECT dni, fecha_nacimiento FROM public.deportista
                        WHERE dni IN :dnis ORDER BY dni FOR UPDATE''').bindparams(bindparam('dnis', expanding=True)).columns(fecha_nacimiento=Date())
-    personas = conexion.execute(consulta, {'dnis': sorted(roles)}).mappings().all()
+    if personas is None:
+        personas = conexion.execute(consulta, {'dnis': sorted(roles)}).mappings().all()
     if len(personas) != len(roles):
         raise ConflictoError('Algún deportista confirmado ya no existe.')
     if any(p['fecha_nacimiento'] and p['fecha_nacimiento'] > campos['fecha_inicio'] for p in personas):
@@ -147,19 +170,23 @@ def _unidad(conexion, imp, campos, miembros):
             if (actuales == roles and u['fecha_inicio'] <= campos['fecha_inicio']
                     and (u['fecha_fin'] is None or u['fecha_fin'] >= campos['fecha_fin'])):
                 return u['id_unidad']
+            if actuales == roles and u['fecha_inicio'] > campos['fecha_inicio']:
+                return _anticipar_unidad(conexion, u['id_unidad'], roles, imp['id_clase'],
+                                         campos['fecha_inicio'], campos['fecha_fin'])
         raise ConflictoError('Un deportista tiene una unidad de esta clase con fechas o miembros incompatibles. Revisa sus equipos antes de incorporar.')
-    # Una unidad abierta también solaparía equipos que empiecen después de
-    # esta regata. No cerrarla ni modificar esos equipos automáticamente.
+    # Buscar primero la etapa posterior más cercana: se puede adelantar su
+    # inicio si conserva miembros, roles y cierre y no cruza otra etapa.
     filtro_limite = ' AND u.fecha_inicio<=:limite' if limite else ''
     futura = conexion.execute(text('''
-        SELECT u.id_unidad FROM public.unidad_competitiva u
+        SELECT DISTINCT u.id_unidad, u.fecha_inicio FROM public.unidad_competitiva u
         JOIN public.forma_parte fp ON fp.id_unidad=u.id_unidad
         WHERE u.id_clase=:clase AND fp.dni_deportista IN :dnis
           AND u.fecha_inicio>:fin
-    ''' + filtro_limite).bindparams(bindparam('dnis', expanding=True)),
+    ''' + filtro_limite + ' ORDER BY u.fecha_inicio, u.id_unidad').bindparams(bindparam('dnis', expanding=True)),
         {'clase': imp['id_clase'], 'dnis': sorted(roles), 'fin': campos['fecha_fin'], 'limite': limite}).first()
     if futura:
-        raise ConflictoError('La unidad abierta se solaparía con un equipo posterior de esta clase. Revisa manualmente sus fechas antes de incorporar.')
+        return _anticipar_unidad(conexion, futura.id_unidad, roles, imp['id_clase'],
+                                 campos['fecha_inicio'], campos['fecha_fin'])
     unidad = conexion.execute(text('''
         INSERT INTO public.unidad_competitiva(fecha_inicio,fecha_fin,id_clase)
         VALUES (:inicio,:fin,:clase) RETURNING id_unidad
@@ -214,26 +241,27 @@ def incorporar_en_conexion(conexion, identificador, filas, campos, version):
         nombre_competicion_propuesto=:nombre, fecha_inicio_propuesta=:fecha_inicio,
         fecha_fin_propuesta=:fecha_fin, localidad_propuesta=:localidad,
         tipo_clasificacion=:tipo_clasificacion WHERE id_importacion=:id'''), {**campos, 'co': co, 'id': identificador})
+    personas = {p['dni']:dict(p) for p in conexion.execute(text('''SELECT dni,fecha_nacimiento
+        FROM public.deportista WHERE dni IN :dnis ORDER BY dni FOR UPDATE''')
+        .bindparams(bindparam('dnis',expanding=True)).columns(fecha_nacimiento=Date()),
+        {'dnis':sorted(documentos)}).mappings()}
+    anteriores = list(conexion.execute(text('SELECT * FROM public.participa_en WHERE id_competicion=:co')
+        .columns(puntos=Numeric(10,2)),{'co':co}).mappings())
+    participantes_previos = {p[0] for p in conexion.execute(text('''SELECT fp.dni_deportista
+        FROM public.participa_en p JOIN public.forma_parte fp ON fp.id_unidad=p.id_unidad
+        WHERE p.id_competicion=:co'''),{'co':co})}
     for f in seleccionadas:
         miembros = miembros_fila(revision, f)
-        unidad = _unidad(conexion, imp, campos, miembros)
-        previos = conexion.execute(text('''
-            SELECT p.* FROM public.participa_en p
-            WHERE p.id_competicion=:co AND (p.id_unidad=:unidad OR p.posicion_general=:puesto)
-        ''').columns(puntos=Numeric(10, 2)), {'co': co, 'unidad': unidad, 'puesto': f['posicion_general']}).mappings().all()
+        dnis = [p['dni_deportista_confirmado'] for p in miembros]
+        unidad = _unidad(conexion, imp, campos, miembros,personas=[personas[d] for d in dnis if d in personas])
+        previos = [p for p in anteriores if p['id_unidad']==unidad or p['posicion_general']==f['posicion_general']]
         if previos:
             igual = (len(previos) == 1 and previos[0]['id_unidad'] == unidad
                      and all(previos[0][k] == f[k] for k in ('posicion_general', 'posicion_categoria', 'puntos')))
             if not igual:
                 raise ConflictoError('Ya existe otro resultado para ese puesto o equipo. No se sobrescribió: revisa la clasificación.')
         else:
-            repetido = conexion.execute(text('''
-                SELECT fp.dni_deportista FROM public.participa_en p
-                JOIN public.forma_parte fp ON fp.id_unidad=p.id_unidad
-                WHERE p.id_competicion=:co AND fp.dni_deportista IN :dnis
-            ''').bindparams(bindparam('dnis', expanding=True)),
-                {'co': co, 'dnis': [p['dni_deportista_confirmado'] for p in miembros]}).first()
-            if repetido:
+            if participantes_previos.intersection(dnis):
                 raise ConflictoError('Un deportista ya tiene un resultado con otro equipo en esta regata.')
             conexion.execute(text('''INSERT INTO public.participa_en
                 (id_unidad,id_competicion,posicion_general,posicion_categoria,puntos)

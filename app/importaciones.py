@@ -59,11 +59,6 @@ def _filas_editadas(marco, originales, tripulantes):
     return resultado
 
 
-def _clase_canonica(nombre):
-    texto = extractor._normalizar(nombre).replace(' ', '')
-    return 'optimist' if texto == 'opt' else texto
-
-
 def mostrar(proveedor, motor, lectura):
     st.title('Importar clasificaciones')
     st.write('Carga un PDF, elige las columnas y revisa la clasificación antes de guardar un borrador.')
@@ -110,7 +105,8 @@ def mostrar(proveedor, motor, lectura):
         st.warning(aviso)
     st.caption(f'{len(resultado["filas"])} filas detectadas en {len(resultado["paginas"])} páginas. Comprueba el recuento con el original.')
     if resultado['clase_detectada']:
-        st.info(f'Clase indicada en el documento: {resultado["clase_detectada"]}.')
+        st.info(f'Texto de clase detectado en el documento: {resultado["clase_detectada"]}. '
+                'Es una referencia; se guardará la clase que selecciones manualmente.')
     if st.checkbox('Mostrar página original', key='importacion_ver_pdf'):
         pagina = st.selectbox('Página del PDF', [p['pagina'] for p in resultado['paginas']], key='importacion_pagina')
         clave = f'importacion_imagen_{huella}_{pagina}'
@@ -160,10 +156,6 @@ def mostrar(proveedor, motor, lectura):
     if tripulantes > 10:
         st.error('La vista previa admite hasta diez miembros por embarcación.')
         return
-    discrepancia = bool(clase is not None and resultado['clase_detectada']
-                        and _clase_canonica(por_clase[clase]['nombre']) != _clase_canonica(resultado['clase_detectada']))
-    if discrepancia:
-        st.warning('La clase seleccionada no coincide con la indicada en el PDF. Elige la clase correcta; si falta en el catálogo, debe darse de alta antes de guardar.')
     opciones_nombres = ['manual'] + (['nombre_club'] if tripulantes == 1 else [])
     modo = st.selectbox('Tratamiento de los nombres', opciones_nombres,
                         format_func=lambda v: {'manual': 'Revisar y escribir cada miembro en la tabla',
@@ -219,7 +211,7 @@ def mostrar(proveedor, motor, lectura):
     etiqueta = 'Supabase' if proveedor == 'supabase' else 'Google Cloud SQL'
     if not bloqueada:
         st.info(f'El borrador se guardará en {etiqueta}. El PDF original se conservará localmente en este equipo.')
-    if st.button('Guardar borrador para revisar', type='primary', disabled=bloqueada or not revisada or clase is None or discrepancia,
+    if st.button('Guardar borrador para revisar', type='primary', disabled=bloqueada or not revisada or clase is None,
                  key='importacion_guardar'):
         campos = {'nombre_archivo': Path(archivo.name).name, 'id_clase': clase, 'nivel': nivel,
                   'nombre_competicion_propuesto': nombre, 'fecha_inicio_propuesta': inicio,

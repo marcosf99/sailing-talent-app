@@ -28,7 +28,7 @@ class TestFormularios(unittest.TestCase):
         self.at.run();self.assertEqual(len(self.at.exception),0);self.m[3].assert_not_called()
     def test_alta_confirmada_limpia_formulario(self):
         at=self.at.run()
-        self.campo('DNI / documento *').set_value('PRUEBA-001')
+        self.campo('DNI / documento').set_value('PRUEBA-001')
         self.campo('Nombre *').set_value('Nombre')
         self.campo('Apellidos *').set_value('Apellido')
         self.guardar()
@@ -42,14 +42,16 @@ class TestFormularios(unittest.TestCase):
         self.guardar()
         self.assertEqual(len(at.exception),0)
         self.assertIn('obligatorio',at.error[0].value)
-    def test_edicion_documento_bloqueado_y_baseline(self):
+    def test_edicion_documento_editable_y_baseline(self):
         at=self.at.run();at.radio[0].set_value('Editar ficha').run()
         self.assertEqual(len(at.exception),0)
-        self.assertTrue(self.campo('DNI / documento *').disabled)
+        self.assertFalse(self.campo('DNI / documento').disabled)
+        self.campo('DNI / documento').set_value('12345678Z')
         self.campo('Nombre *').set_value('Alba María')
         self.guardar()
         self.assertEqual(len(at.exception),0)
         self.assertEqual(self.m[3].call_args.args[1]['nombre'],'Alba María')
+        self.assertEqual(self.m[3].call_args.args[1]['dni'],'12345678Z')
         self.assertEqual(self.m[3].call_args.args[2]['nombre'],'Alba')
     def test_conflicto_no_limpia_borrador(self):
         at=self.at.run();at.radio[0].set_value('Editar ficha').run()
@@ -108,7 +110,7 @@ class TestFormularios(unittest.TestCase):
         at=self.at.run()
         self.selector('Federación autonómica').set_value(2).run()
         self.selector('Club').set_value(2).run()
-        self.campo('DNI / documento *').set_value('PRUEBA-002')
+        self.campo('DNI / documento').set_value('PRUEBA-002')
         self.campo('Nombre *').set_value('Prueba')
         self.campo('Apellidos *').set_value('Club')
         self.guardar()

@@ -41,7 +41,7 @@ class TestInterfaz(unittest.TestCase):
         self.assertEqual([x.label for x in at.tabs],['Resultados deportivos','Evolución física','Trayectoria y equipos','Informes técnicos'])
         self.assertEqual(at.metric[0].value,'2')
         self.assertEqual(len(at.dataframe),3)
-        self.assertEqual(len(at.get('arrow_vega_lite_chart')),1)
+        self.assertEqual(len(at.get('arrow_vega_lite_chart')),2)
 
     def test_sin_mediciones_o_resultados(self):
         at=self.app.run()
@@ -80,7 +80,24 @@ class TestInterfaz(unittest.TestCase):
         at=self.app.run()
         at.selectbox(key='indicador').set_value('Peso (kg)').run()
         self.assertEqual(len(at.exception),0)
-        self.assertEqual(len(at.get('arrow_vega_lite_chart')),1)
+        self.assertEqual(len(at.get('arrow_vega_lite_chart')),2)
+
+    def test_marcas_de_clase_sobre_mediciones_conservando_trayectoria(self):
+        import json
+        def con_cambio(motor,dni,fecha):
+            c=ficha(motor,dni,fecha)
+            c['trayectoria'].append({**c['trayectoria'][0], 'id_unidad':2,
+                                     'clase':'ILCA 4', 'fecha_inicio':date(2026,1,4)})
+            return c
+        with patch.object(datos,'cargar_ficha',side_effect=con_cambio):
+            at=self.app.run()
+        self.assertEqual(len(at.exception),0)
+        self.assertIn('Trayectoria y equipos',[t.label for t in at.tabs])
+        spec=json.loads(at.get('arrow_vega_lite_chart')[0].proto.spec)
+        self.assertEqual(spec['layer'][0]['mark']['type'],'line')
+        self.assertEqual(spec['layer'][1]['mark']['type'],'rule')
+        self.assertTrue(any('inicio registrado' in c.value for c in at.caption))
+        self.assertFalse(any(s.label=='Referencia del cambio' for s in at.selectbox))
 
 
     def test_anio_nacimiento_visible(self):

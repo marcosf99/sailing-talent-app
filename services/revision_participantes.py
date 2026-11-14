@@ -61,24 +61,26 @@ def _similitud_nombre(origen, nombre):
 
 def _club_normalizado(nombre):
     texto = normalizar(nombre)
-    compacto = texto.replace(' ', '')
-    for corto, largo in [('rcn', 'realclubnautico'), ('cnd', 'clubnauticodeportivo'), ('cn', 'clubnautico')]:
+    compacto = ''.join(t for t in texto.split() if t not in ('de', 'del', 'la'))
+    for corto, largo in [('mrcyb', 'monterealclubyatesbaiona'), ('cvf', 'clubvelafluvial'),
+                         ('rcn', 'realclubnautico'), ('cnd', 'clubnauticodeportivo'),
+                         ('cn', 'clubnautico'), ('cm', 'clubmaritimo')]:
         if compacto.startswith(corto):
             compacto = largo + compacto[len(corto):]
             break
     return compacto
 
 
-def _candidatos(conexion, participante, consulta='', limite=10):
+def _candidatos(conexion, participante, consulta='', limite=10, *, fichas=None, aliases=None):
     origen = ' '.join(filter(None, [participante.get('nombre_propuesto'), participante.get('apellidos_propuestos')])) or participante['nombre_original']
     documento = (participante.get('documento_propuesto') or '').upper()
     nombre_club = participante.get('club_original') or ''
     id_club = participante.get('id_club_identificado')
-    aliases = {a['id_club'] for a in datos.aliases_revision(conexion)
+    aliases = {a['id_club'] for a in (datos.aliases_revision(conexion) if aliases is None else aliases)
                if a['texto_normalizado'] == normalizar(nombre_club)}
     consulta_normal = normalizar(consulta)
     salida = []
-    for ficha in datos.fichas_revision(conexion):
+    for ficha in (datos.fichas_revision(conexion) if fichas is None else fichas):
         completo = ficha['nombre'] + ' ' + ficha['apellidos']
         nombre = max(_similitud_nombre(origen, completo), _similitud_nombre(participante['nombre_original'], completo))
         mismo_documento = bool(documento and ficha['dni'].upper() == documento)
@@ -99,10 +101,10 @@ def _candidatos(conexion, participante, consulta='', limite=10):
         if id_club is not None and id_club == ficha['id_club']:
             club = 1.0
             motivos.append('Coincide el club identificado en la revisión')
-        elif ficha['id_club'] is not None and ficha['id_club'] in aliases:
+        elif id_club is None and ficha['id_club'] is not None and ficha['id_club'] in aliases:
             club = 1.0
             motivos.append('Coincide un alias confirmado del club')
-        elif nombre_club and ficha['club']:
+        elif id_club is None and nombre_club and ficha['club']:
             club = SequenceMatcher(None, _club_normalizado(nombre_club), _club_normalizado(ficha['club'])).ratio()
             if club >= .85:
                 motivos.append('El texto del club es similar')
@@ -167,8 +169,7 @@ def _validar_campos(campos, completo=False):
     return ficha, propuesta
 
 
-def _refrescar_fila(conexion, fila, tripulantes):
-    miembros = datos.miembros_revision(conexion, fila['id_fila'])
+def estado_fila(fila, miembros, tripulantes):
     faltas = []
     if fila['posicion_general'] is None:
         faltas.append('Falta la posición general.')
@@ -180,14 +181,21 @@ def _refrescar_fila(conexion, fila, tripulantes):
         faltas.append('Confirma un patrón y un tripulante.')
     confirmados = len(miembros) == tripulantes and all(m['dni_deportista_confirmado'] for m in miembros)
     estado = 'requiere_correccion' if faltas else ('lista' if confirmados else 'pendiente')
-    datos.estado_fila_revision(conexion, fila['id_fila'], estado, ' '.join(faltas) or None)
+    return estado, ' '.join(faltas) or None
+
+
+def _refrescar_fila(conexion, fila, tripulantes):
+    estado, incidencias = estado_fila(fila, datos.miembros_revision(conexion, fila['id_fila']), tripulantes)
+    datos.estado_fila_revision(conexion, fila['id_fila'], estado, incidencias)
 
 
 def guardar_revision_en_conexion(conexion, participante, accion, campos, version,
-                     dni_existente=None, confirmar_nuevo_distinto=False):
+                     dni_existente=None, confirmar_nuevo_distinto=False, *, fichas=None, aliases=None):
     """Guarda ficha e identidad dentro de la transacción abierta por el llamador."""
     if accion not in ('pendiente', 'vincular', 'crear'):
         raise ValidacionError('Selecciona una operación de revisión válida.')
+    if accion == 'crear' and isinstance(campos, dict):
+        campos = {**campos, 'dni': deportistas.documento_para_alta(conexion, campos.get('dni'))}
     ficha, propuesta = _validar_campos(campos, completo=accion == 'crear')
     p = base._bloquear_participante(conexion, participante)
     if not isinstance(version, str) or version_participante(p) != version:
@@ -201,7 +209,7 @@ def guardar_revision_en_conexion(conexion, participante, accion, campos, version
         raise ValidacionError('El club seleccionado ya no existe.')
     if accion in ('crear', 'pendiente') and p['dni_deportista_confirmado']:
         raise ConflictoError('La identidad ya está confirmada. Usa Vincular ficha existente para corregir el vínculo.')
-    candidatos = _candidatos(conexion, {**p, **propuesta})
+    candidatos = _candidatos(conexion, {**p, **propuesta}, fichas=fichas, aliases=aliases)
     for candidato in candidatos:
         datos.guardar_sugerencia(conexion, participante, candidato['dni'],
                                  candidato['indice_similitud'], candidato['motivos'])

@@ -39,6 +39,8 @@ class ComparacionInformes(unittest.TestCase):
         self.m=[p.start() for p in parches]
         self.addCleanup(lambda:[p.stop() for p in reversed(parches)])
         self.at=AppTest.from_string(SCRIPT,default_timeout=15)
+        p=patch.object(datos,'cargar_clases_comparacion',return_value={})
+        p.start();self.addCleanup(p.stop)
 
     def seleccionar(self,dnis):
         self.at.run();self.at.multiselect(key='comparar_seleccion').set_value(dnis).run()

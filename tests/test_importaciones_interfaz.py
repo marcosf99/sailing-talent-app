@@ -101,12 +101,41 @@ class VistaPrevia(unittest.TestCase):
         self.assertEqual(len(self.at.metric), 0)
         self.mocks[2].assert_not_called()
 
-    def test_clase_incorrecta_bloquea_guardado(self):
+    def test_texto_del_pdf_no_bloquea_la_clase_elegida(self):
+        resultado = extractor.extraer_pdf(self.pdf)
+        resultado['clase_detectada'] = 'OPT AMARILLO'
+        with patch.object(extractor, 'extraer_pdf', return_value=resultado):
+            self.analizar()
+        self.configurar();self.revisar()
+        self.assertFalse(self.at.button(key='importacion_guardar').disabled)
+        self.assertFalse(any('no coincide' in w.value for w in self.at.warning))
+        self.assertTrue(any('OPT AMARILLO' in i.value for i in self.at.info))
+        self.at.button(key='importacion_guardar').click().run()
+        self.assertEqual(len(self.at.exception), 0)
+        self.assertEqual(self.mocks[2].call_args.args[2]['id_clase'], 1)
+
+    def test_se_guarda_la_clase_manual_aunque_difiera_del_pdf(self):
         self.analizar();self.configurar()
         self.at.selectbox(key='importacion_clase').set_value(2).run()
         self.revisar()
+        self.assertFalse(self.at.button(key='importacion_guardar').disabled)
+        self.at.button(key='importacion_guardar').click().run()
+        self.assertEqual(len(self.at.exception), 0)
+        self.assertEqual(self.mocks[2].call_args.args[2]['id_clase'], 2)
+
+    def test_clase_obligatoria_aunque_pdf_indique_clase(self):
+        self.analizar()
+        self.at.selectbox(key='importacion_nivel').set_value('Autonomico').run()
+        self.revisar()
         self.assertTrue(self.at.button(key='importacion_guardar').disabled)
-        self.assertTrue(any('no coincide' in w.value for w in self.at.warning))
+        self.mocks[2].assert_not_called()
+
+    def test_cambiar_clase_exige_otra_revision(self):
+        self.analizar();self.configurar();self.revisar()
+        self.at.selectbox(key='importacion_clase').set_value(2).run()
+        self.assertFalse(next(c for c in self.at.checkbox if c.label.startswith('He revisado')).value)
+        self.assertTrue(self.at.button(key='importacion_guardar').disabled)
+        self.mocks[2].assert_not_called()
 
     def test_pdf_invalido_muestra_error_sin_guardado(self):
         self.mocks[0].return_value = BytesIO(b'no es un PDF')

@@ -83,12 +83,16 @@ class RevisionParticipantes(unittest.TestCase):
                                    dni_existente='D1', confirmar_nuevo_distinto=True)
                 self.assertEqual(self.persona(ident)['rol_propuesto'], 'Patron')
 
-    def test_documento_obligatorio_y_duplicado(self):
-        for dni, error in [('', ValidacionError), ('d1', ConflictoError)]:
+    def test_documento_duplicado_no_crea_ficha(self):
+        for dni, error in [('d1', ConflictoError)]:
             with self.assertRaises(error):
                 self.guardar('crear', {**self.nueva, 'dni': dni}, confirmar_nuevo_distinto=True)
         self.assertEqual(self.db.contar('deportista'), 2)
         self.assertIsNone(self.persona()['dni_deportista_confirmado'])
+
+    def test_documento_ausente_asigna_provisional(self):
+        self.guardar('crear', {**self.nueva,'dni':''}, confirmar_nuevo_distinto=True)
+        self.assertRegex(self.persona()['dni_deportista_confirmado'],r'^TEMP-[A-F0-9]{12}$')
 
     def test_coincidencias_exigen_confirmar_persona_distinta(self):
         with self.assertRaises(ValidacionError):

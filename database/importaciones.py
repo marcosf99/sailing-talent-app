@@ -296,3 +296,77 @@ def rechazar_otras_sugerencias(conexion, participante, dni_confirmado):
         SET estado_revision='rechazada', revisado_en=CURRENT_TIMESTAMP
         WHERE id_participante_importado=:id AND dni_deportista<>:dni
     """), {'id': participante, 'dni': dni_confirmado})
+
+
+def clubes_revision(conexion):
+    return [dict(r) for r in conexion.execute(text('''
+        SELECT c.id_club, c.nombre, c.id_federacion, f.nombre AS federacion
+        FROM public.club c JOIN public.federacion_autonomica f USING(id_federacion)
+        ORDER BY c.nombre, c.id_club
+    ''')).mappings()]
+
+
+def identificar_clubes_lote(conexion, participantes, club):
+    sentencia = text('UPDATE public.participante_importado SET id_club_identificado=:club WHERE id_participante_importado IN :ids').bindparams(bindparam('ids', expanding=True))
+    conexion.execute(sentencia, {'club': club, 'ids': participantes})
+
+
+def valores_lote(filas, columnas, tipos):
+    """Construye solo marcadores parametrizados; nunca interpola datos del usuario."""
+    parametros, valores = {}, []
+    for i, fila in enumerate(filas):
+        claves = []
+        for columna, tipo in zip(columnas, tipos):
+            clave = f'{columna}_{i}'
+            parametros[clave] = fila[columna]
+            claves.append(f'CAST(:{clave} AS {tipo})')
+        valores.append('(' + ','.join(claves) + ')')
+    return ','.join(valores), parametros
+
+
+def guardar_vinculos_lote(conexion, filas):
+    for desde in range(0,len(filas),200):
+        lote = filas[desde:desde+200]
+        valores, parametros = valores_lote(lote,('id','dni','rol'),('INTEGER','VARCHAR(20)','VARCHAR(20)'))
+        cte = 'WITH decisiones(id,dni,rol) AS (VALUES '+valores+') '
+        conexion.execute(text(cte+'''INSERT INTO public.coincidencia_propuesta
+            (id_participante_importado,dni_deportista,motivos)
+            SELECT id,dni,'Vinculación en lote confirmada por el usuario' FROM decisiones WHERE TRUE
+            ON CONFLICT (id_participante_importado,dni_deportista) DO NOTHING'''),parametros)
+        conexion.execute(text(cte+'''UPDATE public.coincidencia_propuesta SET
+            estado_revision=CASE WHEN dni_deportista=(SELECT dni FROM decisiones WHERE id=id_participante_importado)
+                THEN 'aceptada' ELSE 'rechazada' END,revisado_en=CURRENT_TIMESTAMP
+            WHERE id_participante_importado IN (SELECT id FROM decisiones)'''),parametros)
+        conexion.execute(text(cte+'''UPDATE public.participante_importado SET
+            dni_deportista_confirmado=(SELECT dni FROM decisiones WHERE id=id_participante_importado),
+            rol_propuesto=(SELECT rol FROM decisiones WHERE id=id_participante_importado),
+            confirmado_en=CURRENT_TIMESTAMP,estado='vinculado'
+            WHERE id_participante_importado IN (SELECT id FROM decisiones)'''),parametros)
+
+
+def estados_filas_lote(conexion, filas):
+    for desde in range(0,len(filas),200):
+        valores,parametros = valores_lote(filas[desde:desde+200],('id','estado','incidencias'),('INTEGER','VARCHAR(40)','TEXT'))
+        conexion.execute(text('WITH cambios(id,estado,incidencias) AS (VALUES '+valores+''')
+            UPDATE public.fila_clasificacion_importada SET
+            estado=(SELECT estado FROM cambios WHERE id=id_fila),
+            incidencias=(SELECT incidencias FROM cambios WHERE id=id_fila)
+            WHERE id_fila IN (SELECT id FROM cambios)'''),parametros)
+
+
+def recordar_alias_revision(conexion, texto_alias, normalizado, club):
+    """La unicidad existente serializa altas concurrentes; nunca reemplaza un alias."""
+    conexion.execute(text('''
+        INSERT INTO public.alias_club(texto_alias,texto_normalizado,id_club,contexto_fuente)
+        VALUES (:texto,:normalizado,:club,NULL) ON CONFLICT DO NOTHING
+    '''), {'texto': texto_alias, 'normalizado': normalizado, 'club': club})
+    return [r[0] for r in conexion.execute(text('''
+        SELECT id_club FROM public.alias_club WHERE texto_normalizado=:normalizado
+        AND (contexto_fuente IS NULL OR BTRIM(contexto_fuente)='')
+    '''), {'normalizado': normalizado})]
+
+
+def identificar_club_revision(conexion, participante, club):
+    conexion.execute(text('''UPDATE public.participante_importado
+        SET id_club_identificado=:club WHERE id_participante_importado=:id'''),
+        {'club': club, 'id': participante})

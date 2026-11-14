@@ -10,6 +10,8 @@ from app import datos
 from services import importaciones as base
 from services import revision_participantes as s
 from services import resultados_importados as resultados
+from services import revision_lotes
+from services import deportistas
 
 SCRIPT = '''
 from app import revision_participantes
@@ -52,10 +54,14 @@ class PantallaRevision(unittest.TestCase):
                         patch.object(s, 'guardar_en_proveedor', side_effect=self.guardar),
                         patch.object(s, 'agregar_en_proveedor', return_value=20),
                         patch.object(datos, 'cargar_clubes', return_value=CLUBES),
-                        patch.object(datos, 'cargar_federaciones', return_value=FEDS)]
+                        patch.object(datos, 'cargar_federaciones', return_value=FEDS),
+                        patch.object(revision_lotes, 'cargar_resumen', return_value={'version':'prueba', 'grupos_club':[], 'propuestas':[]})]
+        self.patches.append(patch.object(deportistas,'datos_pendientes',return_value=[]))
         self.mocks = [p.start() for p in self.patches]
         self.addCleanup(lambda: [p.stop() for p in reversed(self.patches)])
         self.at = AppTest.from_string(SCRIPT, default_timeout=15)
+        self.at.session_state['revision_mostrar_individual']=True
+        self.at.session_state['revision_solo_pendientes_1']=False
 
     def contenido(self, *args):
         seleccionadas = {f['id_fila']: f for f in self.filas if f['cumple_criterio']}
@@ -71,6 +77,8 @@ class PantallaRevision(unittest.TestCase):
                                   participantes_revision=revisables, seleccionadas=list(seleccionadas.values())))
 
     def guardar(self, proveedor, participante, accion, campos, version, dni, distinto, **extras):
+        if accion == 'crear' and not campos.get('dni'):
+            campos={**campos,'dni':'TEMP-ABCDEF123456'}
         s._validar_campos(campos, accion == 'crear')
         if extras:
             resultados._metadatos(extras['datos_resultado'])
@@ -106,6 +114,15 @@ class PantallaRevision(unittest.TestCase):
         self.assertTrue(any('Nombre de la fuente' in str(d.value) for d in at.dataframe))
         self.mocks[3].assert_not_called()
 
+    def test_revision_individual_se_abre_solo_si_se_solicita(self):
+        self.at.session_state['revision_mostrar_individual']=False
+        self.at.run()
+        self.assertEqual(len(self.at.exception),0)
+        self.mocks[2].assert_not_called()
+        self.assertFalse(any(r.label=='Decisión' for r in self.at.radio))
+        next(c for c in self.at.checkbox if c.label.startswith('Revisar una identidad individual')).check().run()
+        self.mocks[2].assert_called_once()
+
     def test_vinculo_exige_eleccion_y_confirmacion(self):
         self.at.run()
         self.assertTrue(self.boton('Vincular ficha seleccionada').disabled)
@@ -124,6 +141,7 @@ class PantallaRevision(unittest.TestCase):
         self.at.run();self.decision('Crear deportista')
         self.assertTrue(self.boton('Crear deportista y guardar resultado').disabled)
         next(c for c in self.at.checkbox if c.label.startswith('He revisado las coincidencias')).check().run()
+        self.entrada('Nombre', '')
         self.boton('Crear deportista y guardar resultado').click().run()
         self.assertTrue(any('obligatorio' in x.value for x in self.at.error))
         self.entrada('DNI / documento', 'D3')

@@ -26,7 +26,7 @@ def mostrar(proveedor, motor, lectura):
     st.write("Añade regatistas o actualiza sus datos personales y su club.")
     etiqueta_proveedor = "Supabase" if proveedor == "supabase" else "Google Cloud SQL"
     st.info(f"Los cambios se guardarán únicamente en {etiqueta_proveedor}. La otra base no se sincroniza automáticamente.")
-    st.caption("El documento es obligatorio. No se cambia desde la edición para conservar mediciones, equipos y resultados relacionados.")
+    st.caption("Si aún no conoces el DNI, deja el documento vacío: se asignará un identificador provisional TEMP-. Después puedes sustituirlo por el DNI en Editar ficha, conservando el historial.")
     mensaje = st.session_state.pop("gestion_guardado", None)
     if mensaje:
         st.success(mensaje)
@@ -80,7 +80,8 @@ def mostrar(proveedor, motor, lectura):
     # y conserva el resto del borrador. La escritura sigue ligada al botón.
     with st.container(border=True):
         a, b = st.columns(2)
-        documento = a.text_input("DNI / documento *", value=base["dni"], max_chars=20, disabled=original is not None, key="gestion_dni_" + clave)
+        documento = a.text_input("DNI / documento", value=base["dni"], max_chars=20, key="gestion_dni_" + clave,
+                                 help="Opcional al crear: vacío genera un identificador provisional. Al editar, conserva el identificador o escribe el DNI conocido.")
         nombre = b.text_input("Nombre *", value=base["nombre"], max_chars=100, key="gestion_nombre_" + clave)
         apellidos = st.text_input("Apellidos *", value=base["apellidos"], max_chars=150, key="gestion_apellidos_" + clave)
         a, b = st.columns(2)

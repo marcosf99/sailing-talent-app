@@ -81,5 +81,9 @@ def cargar_historiales_comparacion(motor, documentos, fecha):
     return antropometria.historiales_para_comparar(motor, documentos, fecha)
 
 
+def cargar_clases_comparacion(motor, documentos, fecha):
+    return antropometria.clases_para_comparar(motor, documentos, fecha)
+
+
 def cargar_federaciones(motor):
     return queries.listar_federaciones(motor)
