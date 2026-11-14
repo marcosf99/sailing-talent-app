@@ -13,7 +13,7 @@ class PruebasServicio(unittest.TestCase):
             c.exec_driver_sql('CREATE TABLE club(id_club INTEGER PRIMARY KEY)')
             c.exec_driver_sql('INSERT INTO club VALUES (9)')
             c.exec_driver_sql('CREATE TABLE deportista(dni TEXT PRIMARY KEY,nombre TEXT NOT NULL,apellidos TEXT NOT NULL,fecha_nacimiento DATE,sexo TEXT,id_club INTEGER REFERENCES club(id_club))')
-            c.exec_driver_sql('CREATE TABLE historial(dni TEXT REFERENCES deportista(dni),dato TEXT)')
+            c.exec_driver_sql('CREATE TABLE historial(dni TEXT REFERENCES deportista(dni) ON UPDATE CASCADE,dato TEXT)')
         self.base=dict(dni=' prueba-001 ',nombre=' Ana ',apellidos=' Lago ',fecha_nacimiento=date(2012,1,4),sexo='Femenino',id_club=9)
         self.addCleanup(self.e.dispose)
     def leer(self):
@@ -33,7 +33,7 @@ class PruebasServicio(unittest.TestCase):
         with self.assertRaises(s.ConflictoError):s.crear_deportista(self.e,{**self.base,'nombre':'Otra'})
         self.assertEqual(self.leer()['nombre'],'Ana')
     def test_invalidos_no_insertan(self):
-        for cambios in [dict(dni=''),dict(nombre=' '),dict(apellidos='x'*151),dict(fecha_nacimiento=date.today()+timedelta(days=1)),dict(fecha_nacimiento='2012-01-04'),dict(sexo='otro'),dict(id_club=-1)]:
+        for cambios in [dict(nombre=' '),dict(apellidos='x'*151),dict(fecha_nacimiento=date.today()+timedelta(days=1)),dict(fecha_nacimiento='2012-01-04'),dict(sexo='otro'),dict(id_club=-1)]:
             with self.subTest(cambios=cambios),self.assertRaises(s.ValidacionError):s.crear_deportista(self.e,{**self.base,**cambios})
         with self.e.connect() as c:self.assertEqual(c.execute(text('SELECT COUNT(*) FROM deportista')).scalar_one(),0)
     def test_club_inexistente(self):
@@ -50,9 +50,23 @@ class PruebasServicio(unittest.TestCase):
         with self.assertRaises(s.ConflictoError):s.actualizar_deportista(self.e,{**original,'apellidos':'Cambio tardío'},original)
         self.assertEqual(self.leer()['nombre'],'Otra persona')
         self.assertEqual(self.leer()['apellidos'],'Lago')
-    def test_documento_inmutable(self):
+    def test_documento_editable_conserva_relaciones(self):
         s.crear_deportista(self.e,self.base);original=self.original()
-        with self.assertRaises(s.ValidacionError):s.actualizar_deportista(self.e,{**original,'dni':'OTRO'},original)
+        with self.e.begin() as c:c.exec_driver_sql("INSERT INTO historial VALUES ('PRUEBA-001','dato')")
+        self.assertEqual(s.actualizar_deportista(self.e,{**original,'dni':'12345678Z'},original),'12345678Z')
+        with self.e.connect() as c:self.assertEqual(c.exec_driver_sql('SELECT dni FROM historial').scalar_one(),'12345678Z')
+        with self.assertRaises(s.ConflictoError):s.actualizar_deportista(self.e,{**original,'nombre':'Obsoleto'},original)
+
+    def test_alta_sin_dni_genera_identificador_provisional(self):
+        documento=s.crear_deportista(self.e,{**self.base,'dni':''})
+        self.assertRegex(documento,r'^TEMP-[A-F0-9]{12}$')
+        self.assertEqual(self.leer()['dni'],documento)
+
+    def test_no_se_fusiona_ficha_al_editar_dni_duplicado(self):
+        s.crear_deportista(self.e,self.base);original=self.original()
+        s.crear_deportista(self.e,{**self.base,'dni':'12345678Z','nombre':'Otra'})
+        with self.assertRaises(s.ConflictoError):s.actualizar_deportista(self.e,{**original,'dni':'12345678Z'},original)
+        with self.e.connect() as c:self.assertEqual(c.exec_driver_sql('SELECT COUNT(*) FROM deportista').scalar_one(),2)
     def test_actualizacion_opcionales_null(self):
         s.crear_deportista(self.e,{**self.base,'sexo':None,'fecha_nacimiento':None,'id_club':None})
         original=self.original()

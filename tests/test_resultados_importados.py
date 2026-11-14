@@ -131,7 +131,7 @@ class ResultadosImportados(unittest.TestCase):
     def test_solapamiento_incompatible_revierte_competicion_y_resultados(self):
         with self.engine.begin() as c:
             c.exec_driver_sql("INSERT INTO unidad_competitiva VALUES (1,'2026-10-04',NULL,1)")
-            c.exec_driver_sql("INSERT INTO forma_parte VALUES ('D1',1,'Patron')")
+            c.exec_driver_sql("INSERT INTO forma_parte VALUES ('D1',1,'Tripulante')")
         self.confirmar()
         with self.assertRaises(ConflictoError): self.aplicar()
         self.assertEqual(self.contar('competicion'), 1)
@@ -300,13 +300,52 @@ class ResultadosImportados(unittest.TestCase):
             self.assertEqual(unidad['fecha_inicio'],'2026-10-03')
             self.assertIsNone(unidad['fecha_fin'])
 
-    def test_nueva_unidad_abierta_no_solapa_equipo_posterior_a_la_regata(self):
+    def test_regata_anterior_adelanta_inicio_del_mismo_equipo(self):
         with self.engine.begin() as c:
             c.exec_driver_sql("INSERT INTO unidad_competitiva VALUES (1,'2026-10-20',NULL,1)")
             c.exec_driver_sql("INSERT INTO forma_parte VALUES ('D1',1,'Patron')")
         self.confirmar()
-        with self.assertRaisesRegex(ConflictoError,'posterior'):
-            self.aplicar()
+        self.aplicar()
+        self.assertEqual(self.contar('participa_en'),1)
+        self.assertEqual(self.contar('unidad_competitiva'),1)
+        with self.engine.connect() as c:
+            self.assertEqual(c.exec_driver_sql('SELECT fecha_inicio,fecha_fin FROM unidad_competitiva').one(),('2026-10-03',None))
+
+    def test_regatas_en_orden_inverso_conservan_resultados_y_unidad(self):
+        self.confirmar(); self.aplicar()
+        otro=self.db.crear(); self.confirmar(ident=otro)
+        self.aplicar(ident=otro,campos={**self.campos,'nombre':'Regata anterior',
+            'fecha_inicio':date(2026,9,26),'fecha_fin':date(2026,9,27)})
+        self.assertEqual(self.contar('participa_en'),2)
+        self.assertEqual(self.contar('unidad_competitiva'),1)
+        with self.engine.connect() as c:
+            self.assertEqual(c.exec_driver_sql('SELECT fecha_inicio,fecha_fin FROM unidad_competitiva').one(),('2026-09-26',None))
+
+    def test_adelanto_no_fusiona_etapa_anterior_cerrada(self):
+        with self.engine.begin() as c:
+            c.exec_driver_sql("INSERT INTO unidad_competitiva VALUES (1,'2026-10-20',NULL,1),(2,'2026-10-05','2026-10-10',1)")
+            c.exec_driver_sql("INSERT INTO forma_parte VALUES ('D1',1,'Patron'),('D1',2,'Tripulante')")
+        self.confirmar()
+        with self.assertRaises(ConflictoError):self.aplicar()
+        self.assertEqual(self.contar('participa_en'),0)
+        with self.engine.connect() as c:
+            self.assertEqual(c.exec_driver_sql('SELECT fecha_inicio FROM unidad_competitiva WHERE id_unidad=1').scalar_one(),'2026-10-20')
+
+    def test_adelanto_conserva_cierre_de_la_etapa_mas_cercana(self):
+        with self.engine.begin() as c:
+            c.exec_driver_sql("INSERT INTO unidad_competitiva VALUES (1,'2026-10-20',NULL,1),(2,'2026-10-05','2026-10-10',1)")
+            c.exec_driver_sql("INSERT INTO forma_parte VALUES ('D1',1,'Patron'),('D1',2,'Patron')")
+        self.confirmar();self.aplicar()
+        with self.engine.connect() as c:
+            self.assertEqual(c.exec_driver_sql('SELECT fecha_inicio,fecha_fin FROM unidad_competitiva WHERE id_unidad=2').one(),('2026-10-03','2026-10-10'))
+            self.assertEqual(c.exec_driver_sql('SELECT fecha_inicio FROM unidad_competitiva WHERE id_unidad=1').scalar_one(),'2026-10-20')
+
+    def test_equipo_posterior_con_otro_rol_no_se_adelanta(self):
+        with self.engine.begin() as c:
+            c.exec_driver_sql("INSERT INTO unidad_competitiva VALUES (1,'2026-10-20',NULL,1)")
+            c.exec_driver_sql("INSERT INTO forma_parte VALUES ('D1',1,'Tripulante')")
+        self.confirmar()
+        with self.assertRaises(ConflictoError):self.aplicar()
         self.assertEqual(self.contar('participa_en'),0)
 
     def test_optimist_limite_14_y_edad_desconocida(self):

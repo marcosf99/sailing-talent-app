@@ -1,5 +1,6 @@
 """Altas y cambios de ficha: SQL parametrizado y transacciones atómicas."""
 from datetime import date
+import secrets
 
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
@@ -48,10 +49,36 @@ def _comprobar_club(conexion, club):
         raise ValidacionError("El club seleccionado ya no existe. Actualiza los datos.")
 
 
+def documento_para_alta(conexion, documento):
+    """Usa un ID reconocible como provisional cuando aún no hay documento."""
+    if documento is not None and (not isinstance(documento, str) or documento.strip()):
+        return documento
+    for _ in range(10):
+        provisional = 'TEMP-' + secrets.token_hex(6).upper()
+        if not conexion.execute(text('SELECT dni FROM public.deportista WHERE UPPER(dni)=:dni'), {'dni': provisional}).first():
+            return provisional
+    raise ConflictoError('No se pudo asignar un identificador provisional único. Reintenta el alta.')
+
+
+def datos_pendientes(engine):
+    """Fichas con documento provisional o sin nacimiento, sin cargar historias."""
+    with engine.connect() as c:
+        filas = c.execute(text('''SELECT d.dni,d.nombre,d.apellidos,d.fecha_nacimiento,d.id_club,
+            cl.nombre AS club,cl.id_federacion,f.nombre AS federacion
+            FROM public.deportista d LEFT JOIN public.club cl ON cl.id_club=d.id_club
+            LEFT JOIN public.federacion_autonomica f ON f.id_federacion=cl.id_federacion
+            WHERE d.fecha_nacimiento IS NULL OR UPPER(d.dni) LIKE 'TEMP-%'
+               OR UPPER(d.dni) LIKE 'TEST-%' OR UPPER(d.dni) LIKE 'STDEMO%'
+               OR UPPER(d.dni) LIKE 'PRUEBA%'
+            ORDER BY f.nombre,cl.nombre,d.apellidos,d.nombre,d.dni''')).mappings()
+        return [dict(r, sin_dni=r['dni'].upper().startswith(('TEMP-','TEST-','STDEMO','PRUEBA')),
+                     sin_nacimiento=r['fecha_nacimiento'] is None) for r in filas]
+
+
 def crear_deportista(engine, campos):
-    datos = validar(campos)
     try:
         with engine.begin() as conexion:
+            datos = validar({**campos, 'dni': documento_para_alta(conexion, campos.get('dni'))})
             _comprobar_club(conexion, datos["id_club"])
             existente = conexion.execute(text(
                 "SELECT dni FROM public.deportista WHERE UPPER(dni) = :dni"
@@ -70,8 +97,6 @@ def crear_deportista(engine, campos):
 
 def actualizar_deportista(engine, campos, original):
     datos = validar(campos)
-    if datos["dni"] != original["dni"].strip().upper():
-        raise ValidacionError("El documento identifica la ficha y no se puede cambiar desde este formulario.")
     parametros = {**datos, "dni_original": original["dni"]}
     for campo in CAMPOS:
         parametros["antes_" + campo] = original[campo]
@@ -83,17 +108,21 @@ def actualizar_deportista(engine, campos, original):
     try:
         with engine.begin() as conexion:
             _comprobar_club(conexion, datos["id_club"])
+            duplicado = conexion.execute(text('SELECT dni FROM public.deportista WHERE UPPER(dni)=:dni AND dni<>:original'),
+                {'dni': datos['dni'], 'original': original['dni']}).first()
+            if duplicado:
+                raise ConflictoError('Ese documento ya pertenece a otra ficha. No se han fusionado ni modificado sus datos.')
             resultado = conexion.execute(text("""
                 UPDATE public.deportista
-                SET nombre=:nombre, apellidos=:apellidos,
+                SET dni=:dni, nombre=:nombre, apellidos=:apellidos,
                     fecha_nacimiento=:fecha_nacimiento, sexo=:sexo, id_club=:id_club
                 WHERE dni=:dni_original AND """ + condiciones), parametros)
             if resultado.rowcount != 1:
                 raise ConflictoError("La ficha cambió o fue eliminada desde que la abriste. Recarga la ficha antes de guardar.")
     except IntegrityError:
         raise ConflictoError("No se pudo guardar: los datos relacionados han cambiado. Recarga la ficha.") from None
-    # El DNI original y todas sus relaciones se conservan.
-    return original["dni"]
+    # Las referencias del modelo usan ON UPDATE CASCADE: conservan la misma ficha.
+    return datos['dni']
 
 
 def guardar_en_proveedor(proveedor, campos, original=None):

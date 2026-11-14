@@ -190,8 +190,9 @@ La pagina **Importar clasificaciones** permite:
 3. Elegir la columna de posicion general, puntos, vela y opcionalmente nombres
    y categoria. Los encabezados repetidos se distinguen con su numero de columna.
    NET se propone antes que TOTAL; el usuario confirma la columna adecuada.
-4. Seleccionar manualmente nivel y clase. Una clase detectada que no coincide
-   bloquea el guardado para evitar asignar resultados a otra clase.
+4. Seleccionar manualmente nivel y clase del catálogo. El texto de clase detectado
+   en el PDF es una referencia informativa y no bloquea el guardado: prevalece la
+   elección manual, que debe confirmarse junto con la revisión de las columnas.
 5. Revisar las celdas y escribir cada tripulante por separado. Para individuales
    puede elegirse explicitamente primera linea como nombre y siguientes como club.
    Los equipos dobles se transcriben manualmente cuando la fuente mezcla nombres
@@ -245,7 +246,8 @@ sin dar de alta sus participantes desde esta pantalla.
   o documento. La similitud es heuristica: no representa una probabilidad.
 - **Vincular ficha existente** requiere seleccionar una ficha y confirmar la
   identidad. El club identificado en la fuente no cambia el club actual de la ficha.
-- **Crear deportista** exige documento, nombre y apellidos. Nacimiento y sexo son
+- **Crear deportista** exige nombre y apellidos. Sin DNI se genera un identificador
+  provisional `TEMP-` aleatorio, que no representa un documento real. Nacimiento y sexo son
   opcionales. El usuario confirma expresamente que debe crearse otra ficha;
   el servicio vuelve a comprobar documentos y posibles coincidencias al guardar.
   **Crear deportista y guardar resultado** incorpora tambien la regata, su unidad
@@ -484,3 +486,108 @@ sola consulta parametrizada, además de la lectura de mediciones existente.
 La caché es privada de sesión, por proveedor, fecha y selección. Si falla la
 lectura de las clases, se conservan las curvas y se informa de que no se han
 podido mostrar sus marcas. No requiere migraciones ni escribe en las bases.
+
+### Revisión conjunta de clubes y participantes
+
+En **Revisión de participantes**, tras los datos de la regata, se añaden dos
+tablas. Los formularios individuales y la incorporación de resultados se
+conservan.
+
+1. **Resolver clubes del documento** agrupa textos equivalentes tras normalizar
+   acentos y puntuación. Propone el club a partir de decisiones del borrador,
+   alias globales confirmados, nombre o similitud de texto. El usuario debe
+   seleccionar expresamente las filas y confirmar antes de aplicar el club a
+   sus participantes pendientes. Un texto ausente se revisa individualmente.
+   Una equivalencia ya confirmada desaparece de las tareas pendientes, aunque
+   las identidades de esos participantes todavía estén por resolver.
+2. **Recordar equivalencia** es opcional y comienza desmarcado. Guarda un alias
+   global en `alias_club` para futuras propuestas. Repetirlo para el mismo club
+   no duplica registros; una equivalencia existente para otro club produce un
+   conflicto y no se reemplaza. Se puede aplicar una decisión exclusivamente a
+   este documento sin guardar el alias. Los alias con contexto específico no
+   se aplican como globales.
+3. **Vincular participantes en una tabla** muestra nombre y club de la fuente,
+   club identificado, ficha propuesta, club actual, nacimiento, motivos y rol.
+   **Seleccionar todas las coincidencias propuestas** permite marcar el lote y
+   desmarcar excepciones antes de la confirmación explícita. Los homónimos, las
+   fichas propuestas para varias posiciones y las coincidencias insuficientes se dejan para el
+   formulario individual, que sigue permitiendo buscar otra ficha y crear una
+   nueva con los datos requeridos.
+   Solo se muestran filas que tengan una ficha existente propuesta; las altas
+   sin coincidencias se muestran únicamente en su sección de creación.
+
+La propuesta conjunta utiliza hasta cinco coincidencias por persona. Ofrece
+una ficha si coincide un documento propuesto de forma única, o si la similitud
+orientativa es al menos 0,75 y supera a la segunda en al menos 0,05. Estos
+umbrales ordenan la revisión; no son probabilidades ni confirman identidades.
+Las fichas y los alias se leen una vez por resumen, sin consultar de nuevo el
+catálogo completo para cada participante. El resumen se guarda en la caché
+privada de sesión con proveedor, borrador y versión.
+
+Cada lote se guarda en una transacción que bloquea su importación. Se comprueba
+la versión de los datos revisados y de las fichas propuestas, el nacimiento
+respecto a la regata, la exclusión de filas y las identidades repetidas. En
+dobles se revisan los roles y una tripulación completa necesita un patrón y
+un tripulante. Un fallo revierte todo el lote. No se cambia el texto original,
+el club actual de una ficha existente ni las filas importadas/excluidas.
+
+**Crear fichas sin DNI e incorporar resultados** permite seleccionar varias altas
+que no tengan fichas similares y cuyo club ya se haya confirmado. Se revisan
+nombre y apellidos en una tabla; el nacimiento desconocido permanece NULL. Cada
+alta recibe un identificador aleatorio `TEMP-` y su resultado en la misma
+transacción. Cualquier coincidencia nueva, equipo incompleto o conflicto revierte
+todo el lote, incluso las altas ya preparadas. No se crean fichas automáticamente.
+
+En **Gestión de deportistas → Editar ficha**, el identificador provisional puede
+sustituirse por el DNI conocido. Las claves foráneas del modelo usan `ON UPDATE
+CASCADE`, conservando mediciones, informes, equipos y las revisiones de origen.
+Se rechaza un DNI que ya pertenezca a otra ficha y una edición obsoleta, sin
+fusionar identidades. No se requieren migraciones del esquema actual. Las altas
+individuales también admiten el DNI vacío para asignar un identificador provisional.
+
+Con **Vincular e incorporar los resultados en este paso**, las fichas existentes
+y sus resultados se asocian en una sola transacción, tras revisar también los
+datos de la regata, puestos y puntos. Si algún equipo está incompleto o hay un
+conflicto, se revierte todo el lote. Desmarcar esa opción permite preparar los
+resultados para el botón existente. Las altas individuales conservan el guardado conjunto de deportista
+y resultado ya implementado. No hay migración de esquema ni cargas iniciales
+de alias: solo se registran equivalencias confirmadas por el usuario.
+
+Se reconocen como propuestas las abreviaturas M.R.C.Y.B., CM Canido y C.V.F.
+As Pontes frente a sus nombres completos del catálogo, ignorando puntuación y
+partículas como «de». Si varios clubes coinciden, se exige revisión individual.
+
+Al incorporar regatas en orden inverso, puede adelantarse el inicio de una
+unidad existente de la misma clase con los mismos miembros y roles. Se elige
+la etapa posterior más cercana, se conserva su cierre y sus resultados, y se
+rechaza la ampliación si cruza otra etapa de cualquiera de sus miembros. El
+adelanto se revierte si falla el resto de la incorporación. Se conservan las
+comprobaciones de edad de Optimist; no se fusionan equipos distintos ni se
+reabren unidades cerradas.
+
+### Datos personales pendientes y rendimiento de la revisión
+
+La sección **Datos personales pendientes · por federación y club** reúne todas
+las fichas de la base seleccionada que tienen documento provisional o carecen
+de fecha de nacimiento. Se reconocen los prefijos `TEMP-`, `TEST-`, `STDEMO` y
+`PRUEBA`; no se presentan como DNIs reales. No se comprueba aquí la validez legal
+de otros documentos. Se puede filtrar por federación, club, falta de DNI, falta
+de nacimiento o ambos, incluyendo fichas sin club ni federación.
+
+Se muestran totales por club/federación y el detalle de las fichas. Una misma
+persona no se duplica cuando le faltan ambos datos. Los datos se completan en
+**Gestión de deportistas → Editar ficha**; esta vista no escribe datos ni envía
+solicitudes. El informe se actualiza con la caché privada del proveedor.
+
+El formulario individual se abre únicamente al activar **Revisar una identidad
+individual**, para coincidencias dudosas, búsquedas manuales y correcciones.
+Mientras está cerrado no ejecuta búsquedas de candidatos.
+
+La vinculación por lotes valida el borrador y las fichas una sola vez, agrupa
+las escrituras de identidades, decisiones de coincidencia y estados de filas,
+y evita repetir el flujo individual por persona. Los resultados comparten las
+lecturas y bloqueos de deportistas y los resultados existentes de la competición.
+Las altas nuevas reutilizan el catálogo dentro de su transacción y lo amplían
+tras cada alta para seguir detectando duplicados dentro del propio lote.
+Se conservan los controles de versiones, roles, nacimiento, edad, puestos,
+equipos y reversión completa ante conflictos. No requiere migraciones.
