@@ -17,14 +17,7 @@ ERRORES = (SQLAlchemyError, KeyError, OSError)
 
 def _nombre_inicial(participante):
     """Sugiere una separación editable, conservando la revisión ya guardada."""
-    if any(participante[c] is not None for c in ('nombre_propuesto', 'apellidos_propuestos')):
-        return participante['nombre_propuesto'] or '', participante['apellidos_propuestos'] or ''
-    original = ' '.join((participante['nombre_original'] or '').split())
-    if ',' in original:
-        apellidos, nombre = original.split(',', 1)
-        return nombre.strip(), apellidos.strip()
-    partes = original.split(' ', 1)
-    return partes[0], partes[1] if len(partes) > 1 else ''
+    return servicio.nombre_inicial(participante)
 
 
 def _exito(mensaje, pantalla):

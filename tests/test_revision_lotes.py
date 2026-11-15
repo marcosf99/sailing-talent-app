@@ -213,6 +213,59 @@ class RevisionLotes(unittest.TestCase):
         self.assertEqual(self.db.contar('deportista'),2)
         self.assertTrue(all(p['dni_deportista_confirmado'] is None for p in base.obtener_borrador(self.engine,self.ident)['participantes']))
 
+    def ejecutar_altas(self,r,decisiones):
+        event.listen(self.engine,'before_cursor_execute',lambda c,cu,q,p,ctx,m:(q.replace(' FOR UPDATE',''),p),retval=True)
+        return s.crear_nuevos(self.engine,self.ident,decisiones,r['version'],dict(nombre='Altas comprobadas',
+            fecha_inicio=date(2026,10,3),fecha_fin=date(2026,10,4),localidad='Vigo',tipo_clasificacion='definitiva'),confirmar=True)
+
+    def test_altas_agrupadas_conservan_nacimiento_propuestas_y_memoria(self):
+        r,decisiones=self.preparar_altas()
+        decisiones[0]['campos'].update(fecha_nacimiento=date(2012,2,3),sexo='Femenino',
+            observaciones_revision="Revisión d'alta",recordar_nombre=True)
+        self.ejecutar_altas(r,decisiones)
+        b=base.obtener_borrador(self.engine,self.ident);p=b['participantes'][0]
+        self.assertEqual(p['fecha_nacimiento_propuesta'],date(2012,2,3))
+        self.assertEqual(p['sexo_propuesto'],'Femenino')
+        self.assertEqual(p['observaciones_revision'],"Revisión d'alta")
+        self.assertEqual(p['documento_propuesto'],p['dni_deportista_confirmado'])
+        self.assertEqual(p['estado'],'nuevo_confirmado')
+        with self.engine.connect() as c:
+            self.assertEqual(c.execute(text('SELECT fecha_nacimiento FROM deportista WHERE dni=:dni'),{'dni':p['dni_deportista_confirmado']}).scalar_one(),'2012-02-03')
+            self.assertEqual(c.execute(text('SELECT count(*) FROM variante_nombre_deportista')).scalar_one(),1)
+
+    def test_version_individual_obsoleta_no_escribe_el_lote(self):
+        r,decisiones=self.preparar_altas();decisiones[1]['version']='obsoleta'
+        with self.assertRaisesRegex(ConflictoError,'revisión cambió'):
+            self.ejecutar_altas(r,decisiones)
+        self.assertEqual(self.db.contar('deportista'),2)
+
+    def test_fallo_de_segunda_ficha_revierte_el_lote(self):
+        r,decisiones=self.preparar_altas()
+        with self.engine.begin() as c:
+            c.exec_driver_sql("CREATE TRIGGER fallo BEFORE INSERT ON deportista WHEN NEW.nombre='Úrsula' BEGIN SELECT RAISE(ABORT,'fallo'); END")
+        with self.assertRaises(ConflictoError):self.ejecutar_altas(r,decisiones)
+        self.assertEqual(self.db.contar('deportista'),2)
+        self.assertTrue(all(p['dni_deportista_confirmado'] is None for p in base.obtener_borrador(self.engine,self.ident)['participantes']))
+
+    def test_fallo_de_resultados_revierte_altas_y_memorias(self):
+        r,decisiones=self.preparar_altas()
+        for d in decisiones:d['campos']['recordar_nombre']=True
+        with self.engine.begin() as c:
+            c.exec_driver_sql("CREATE TRIGGER fallo BEFORE INSERT ON participa_en BEGIN SELECT RAISE(ABORT,'fallo'); END")
+        with self.assertRaises(ConflictoError):self.ejecutar_altas(r,decisiones)
+        self.assertEqual(self.db.contar('deportista'),2)
+        self.assertEqual(self.db.contar('participa_en'),0)
+        with self.engine.connect() as c:
+            self.assertEqual(c.execute(text('SELECT count(*) FROM variante_nombre_deportista')).scalar_one(),0)
+
+    def test_identificadores_provisionales_comprueban_catalogo_y_lote(self):
+        from services import deportistas
+        ocupados={'TEMP-'+'0'*12}
+        with patch.object(deportistas.secrets,'token_hex',side_effect=['0'*12,'1'*12,'1'*12,'2'*12]):
+            self.assertEqual(deportistas.documento_provisional_lote(ocupados),'TEMP-'+'1'*12)
+            self.assertEqual(deportistas.documento_provisional_lote(ocupados),'TEMP-'+'2'*12)
+        self.assertEqual(len(ocupados),3)
+
     def test_equipo_incompleto_identifica_companero_antes_de_crear_fichas(self):
         r, decisiones = self.preparar_altas()
         with self.engine.begin() as c:
@@ -309,17 +362,13 @@ class RevisionLotes(unittest.TestCase):
         self.assertTrue(all(p['dni_deportista_confirmado'] is None for p in b['participantes']))
         self.assertEqual(self.db.contar('participa_en'),0)
 
-    def test_familiares_del_lote_necesitan_confirmacion_y_se_crean_distintos(self):
+    def test_familiares_con_nombres_distintos_se_crean_sin_confirmacion_extra(self):
         event.listen(self.engine,'before_cursor_execute',lambda c,cu,q,p,ctx,m:(q.replace(' FOR UPDATE',''),p),retval=True)
         r,decisiones=self.preparar_altas(('Lucas Montoya Porland','Nicolas Montoya Porland'))
         contenido=base.obtener_borrador(self.engine,self.ident)
         pares=s.similitudes_altas(contenido,decisiones)
-        self.assertEqual(pares,[{'Participante':'Nicolas Montoya Porland','Otra alta del lote':'Lucas Montoya Porland'}])
+        self.assertEqual(pares,[])
         campos=dict(nombre='Vigo nuevas',fecha_inicio=date(2026,10,3),fecha_fin=date(2026,10,4),localidad='Vigo',tipo_clasificacion='definitiva')
-        with self.assertRaisesRegex(ConflictoError,'Nicolas.*Lucas'):
-            s.crear_nuevos(self.engine,self.ident,decisiones,r['version'],campos,confirmar=True)
-        self.assertEqual(self.db.contar('deportista'),2)
-        for d in decisiones:d['confirmar_distinto_lote']=True
         salida=s.crear_nuevos(self.engine,self.ident,decisiones,r['version'],campos,confirmar=True)
         self.assertEqual(salida,dict(creados=2,resultados_incorporados=2))
         self.assertEqual(self.db.contar('deportista'),4)

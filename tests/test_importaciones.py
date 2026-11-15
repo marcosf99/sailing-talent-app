@@ -123,6 +123,7 @@ class PersistenciaImportaciones(unittest.TestCase):
 
         @event.listens_for(self.engine, 'before_cursor_execute', retval=True)
         def adaptar(c, cursor, sql, parametros, contexto, many):
+            sql=re.sub(r'CAST\((\?) AS DATE\)', r'\1', sql)  # SQLite convierte CAST AS DATE en un entero; PostgreSQL conserva DATE.
             return sql.replace('public.', '').replace(' FOR UPDATE OF i', ''), parametros
 
         # El DDL del proyecto es la fuente; no mantenemos otro modelo de tablas.

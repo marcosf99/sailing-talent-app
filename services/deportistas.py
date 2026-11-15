@@ -60,6 +60,16 @@ def documento_para_alta(conexion, documento):
     raise ConflictoError('No se pudo asignar un identificador provisional único. Reintenta el alta.')
 
 
+def documento_provisional_lote(ocupados):
+    """Reserva un TEMP- en el catálogo ya leído, incluyendo las altas del lote."""
+    for _ in range(10):
+        provisional = 'TEMP-' + secrets.token_hex(6).upper()
+        if provisional not in ocupados:
+            ocupados.add(provisional)
+            return provisional
+    raise ConflictoError('No se pudo asignar un identificador provisional único. Reintenta el alta.')
+
+
 def datos_pendientes(engine):
     """Fichas con documento provisional o sin nacimiento, sin cargar historias."""
     with engine.connect() as c:
