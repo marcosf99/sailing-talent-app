@@ -180,6 +180,15 @@ class TablasRevision(unittest.TestCase):
         self.assertEqual(len(self.at.exception),0)
         self.assertTrue(all(d['confirmar_distinto_lote'] for d in self.mocks[1].call_args.args[3]))
 
+    def test_recordar_nombres_del_lote_es_opcional_y_exige_confirmar_vinculos(self):
+        self.at.run()
+        next(c for c in self.at.checkbox if c.label=='Seleccionar todas las coincidencias propuestas').check().run()
+        next(c for c in self.at.checkbox if c.label=='Recordar los nombres seleccionados como variantes de sus fichas').check().run()
+        self.assertTrue(self.boton('Confirmar vinculaciones seleccionadas').disabled)
+        next(c for c in self.at.checkbox if c.label.startswith('Confirmo que cada ficha')).check().run()
+        self.boton('Confirmar vinculaciones seleccionadas').click().run()
+        self.assertTrue(all(d['recordar_nombre'] for d in self.mocks[1].call_args.args[3]))
+
     def test_club_seleccionado_y_recordatorio_opcional(self):
         self.at.run();self.editar('clubes',{0:{'Confirmar':True,'Recordar equivalencia':True,'Club identificado':'Club B · Baleares'}})
         self.assertTrue(self.boton('Confirmar clubes seleccionados').disabled)

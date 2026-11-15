@@ -9,6 +9,7 @@ from app import datos, revision_lotes, datos_pendientes
 from services import importaciones as borradores
 from services import revision_participantes as servicio
 from services import resultados_importados as resultados
+from services import memoria_nombres as memoria
 
 
 ERRORES = (SQLAlchemyError, KeyError, OSError)
@@ -230,6 +231,24 @@ def _mostrar(proveedor, motor, lectura, pantalla):
         st.caption('La similitud ayuda a ordenar candidatos; no confirma una identidad. Se muestran hasta veinte fichas. Precisa la búsqueda si lo necesitas.')
     else:
         st.info('No se han encontrado coincidencias con esta búsqueda. Puedes buscar otro nombre o documento antes de crear una ficha.')
+    if st.checkbox('Consultar o corregir decisiones de nombres recordadas', key=prefijo+'ver_memoria'):
+        try:
+            guardadas = memoria.listar(motor, participante)
+            if not guardadas:
+                st.info('No hay decisiones recordadas para este nombre y club de la fuente.')
+            else:
+                etiquetas_memoria = {i: f"{g['tipo'].capitalize()} · {g['nombre']} {g['apellidos']} · {g['nombre_original']}" for i,g in enumerate(guardadas)}
+                elegidas_memoria = st.multiselect('Decisiones que quieres olvidar', list(etiquetas_memoria),
+                    format_func=etiquetas_memoria.get, key=prefijo+'olvidar_memoria')
+                confirmar_olvido = st.checkbox('Confirmo que quiero olvidar estas decisiones para futuras clasificaciones.',key=prefijo+'confirmar_olvido')
+                if st.button('Olvidar decisiones seleccionadas',disabled=not editable or not elegidas_memoria or not confirmar_olvido,key=prefijo+'guardar_olvido'):
+                    memoria.olvidar_en_proveedor(proveedor,participante,p['version'],
+                        [dict(tipo=guardadas[i]['tipo'],dni=guardadas[i]['dni_deportista']) for i in elegidas_memoria])
+                    _exito('Decisiones olvidadas. Las propuestas se han actualizado.',pantalla)
+        except (servicio.ValidacionError, servicio.ConflictoError) as error:
+            st.error(str(error))
+        except ERRORES:
+            st.error('No se pudieron consultar o cambiar las decisiones recordadas. Actualiza la revisión.')
     operaciones = ['Vincular ficha existente', 'Crear deportista', 'Dejar pendiente']
     operacion = st.radio('Decisión', operaciones, index=0 if candidatos or p['dni_deportista_confirmado'] else 2,
                          key=f'revision_accion_{proveedor}_{identificador}_{participante}', disabled=not editable)
@@ -284,6 +303,18 @@ def _mostrar(proveedor, motor, lectura, pantalla):
                                               format_func=lambda r: {'Patron': 'Patrón', 'Tripulante': 'Tripulante'}.get(r, 'Sin confirmar'),
                                               key=prefijo + 'rol', disabled=not editable)
     campos['observaciones_revision'] = st.text_area('Observaciones de la revisión', value=p['observaciones_revision'] or '', key=prefijo + 'notas', disabled=not editable)
+    if accion in ('crear','vincular'):
+        st.caption('Recordar decisiones es opcional: confirma primero el club de la fuente. Solo afecta a este nombre y ese club; no cambia el nombre oficial de la ficha.')
+        recordar=st.checkbox('Recordar este nombre como variante de la ficha confirmada',key=prefijo+'recordar_nombre_'+str(elegido)+'_'+str(campos['id_club']),disabled=not editable or campos['id_club'] is None)
+        descartables={c['dni']:c for c in candidatos if c['dni']!=elegido}
+        clave_descartes=prefijo+'descartar_nombres'
+        if clave_descartes in st.session_state and any(d not in descartables for d in st.session_state[clave_descartes]):
+            st.session_state.pop(clave_descartes,None)
+        descartados=st.multiselect('Fichas similares que confirmo que son otras personas',list(descartables),
+            format_func=lambda d:descartables[d]['nombre']+' '+descartables[d]['apellidos'],
+            key=clave_descartes,disabled=not editable or campos['id_club'] is None)
+        if recordar:campos['recordar_nombre']=True
+        if descartados:campos['descartar_dnis']=descartados
     miembros = resultados.miembros_fila(revision, fila)
     automatico = accion == 'crear' or (accion == 'vincular' and any(
         m['estado'] == 'nuevo_confirmado' and m['id_participante_importado'] != participante for m in miembros))

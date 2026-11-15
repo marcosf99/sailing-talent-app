@@ -12,6 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from database import importaciones as datos
 from services import importaciones as base
 from services import deportistas
+from services import memoria_nombres as memoria
 from services.deportistas import ValidacionError, ConflictoError
 
 
@@ -20,7 +21,7 @@ _VERSION = ('id_participante_importado', 'estado', 'dni_deportista_confirmado', 
             'fecha_nacimiento_propuesta', 'sexo_propuesto', 'id_club_identificado',
             'rol_propuesto', 'observaciones_revision')
 _CAMPOS = {'dni', 'nombre', 'apellidos', 'fecha_nacimiento', 'sexo', 'id_club',
-           'rol_propuesto', 'observaciones_revision'}
+           'rol_propuesto', 'observaciones_revision', 'recordar_nombre', 'descartar_dnis'}
 
 
 def normalizar(valor):
@@ -83,19 +84,32 @@ def _candidatos(conexion, participante, consulta='', limite=10, *, fichas=None, 
     for ficha in (datos.fichas_revision(conexion) if fichas is None else fichas):
         completo = ficha['nombre'] + ' ' + ficha['apellidos']
         nombre = max(_similitud_nombre(origen, completo), _similitud_nombre(participante['nombre_original'], completo))
+        nombre_texto = nombre
         mismo_documento = bool(documento and ficha['dni'].upper() == documento)
+        decisiones = [m for m in ficha.get('memoria_nombres', [])
+                      if m['id_club'] == id_club and m['nombre_normalizado'] == memoria.clave(participante['nombre_original'])]
+        descartada = any(m['tipo']=='descarte' for m in decisiones)
+        variante = any(m['tipo']=='variante' for m in decisiones) and not descartada
+        if variante:
+            nombre = 1.0
+        if descartada and not consulta and not mismo_documento:
+            continue
         if consulta:
-            buscable = normalizar(completo + ' ' + ficha['dni'])
+            buscable = normalizar(completo + ' ' + ficha['dni'] + ' ' + ' '.join(m['nombre_normalizado'] for m in ficha.get('memoria_nombres',[]) if m['tipo']=='variante'))
             if not all(t in buscable for t in consulta_normal.split()):
                 continue
         elif nombre < .6 and not mismo_documento:
             continue
         motivos = []
+        if variante:
+            motivos.append('Variante de nombre confirmada anteriormente para este club')
+        if descartada:
+            motivos.append('Coincidencia descartada anteriormente; revisar antes de corregir la decisión')
         if mismo_documento:
             motivos.append('Coincide el documento propuesto')
-        if nombre >= .999:
+        if nombre_texto >= .999:
             motivos.append('Coincide el nombre completo, ignorando acentos y puntuación')
-        elif nombre >= .6:
+        elif nombre_texto >= .6:
             motivos.append('Nombre o apellidos similares; puede faltar un apellido')
         club = 0.0
         if id_club is not None and id_club == ficha['id_club']:
@@ -114,10 +128,11 @@ def _candidatos(conexion, participante, consulta='', limite=10, *, fichas=None, 
         misma_fed = bool(federacion and federacion == normalizar(ficha['federacion']))
         if misma_fed:
             motivos.append('Coincide la federación indicada en la fuente')
-        puntuacion = 1.0 if mismo_documento else min(.99999, .88 * nombre + .1 * club + .02 * misma_fed)
+        puntuacion = 1.0 if (mismo_documento or variante) else min(.99999, .88 * nombre + .1 * club + .02 * misma_fed)
         salida.append({**ficha, 'indice_similitud': Decimal(str(round(puntuacion, 5))),
-                       'motivos': '; '.join(motivos) or 'Resultado de la búsqueda manual'})
-    return sorted(salida, key=lambda r: (-r['indice_similitud'], r['apellidos'], r['nombre'], r['dni']))[:limite]
+                       'motivos': '; '.join(motivos) or 'Resultado de la búsqueda manual',
+                       'variante_confirmada': variante, 'coincidencia_descartada': descartada})
+    return sorted(salida, key=lambda r: (-int(bool(documento and r['dni'].upper()==documento)), -r['indice_similitud'], r['apellidos'], r['nombre'], r['dni']))[:limite]
 
 
 def buscar_coincidencias(engine, participante, consulta='', limite=10):
@@ -145,6 +160,11 @@ def cargar_revision(engine, identificador):
 def _validar_campos(campos, completo=False):
     if not isinstance(campos, dict) or set(campos) - _CAMPOS:
         raise ValidacionError('La revisión contiene campos no admitidos.')
+    if type(campos.get('recordar_nombre',False)) is not bool:
+        raise ValidacionError('Confirma explícitamente si quieres recordar esta variante de nombre.')
+    descartes=campos.get('descartar_dnis',[])
+    if not isinstance(descartes,list) or len(descartes)>20 or any(not isinstance(d,str) for d in descartes):
+        raise ValidacionError('Selecciona como máximo veinte coincidencias para descartar.')
     if completo:
         ficha = deportistas.validar(campos)
     else:
@@ -238,6 +258,19 @@ def guardar_revision_en_conexion(conexion, participante, accion, campos, version
     if dni is not None:
         datos.rechazar_otras_sugerencias(conexion, participante, dni)
         datos.confirmar_identidad(conexion, participante, dni)
+    recordar=campos.get('recordar_nombre',False)
+    descartes=campos.get('descartar_dnis',[])
+    if recordar or descartes:
+        if dni is None:
+            raise ValidacionError('Confirma primero una identidad antes de recordar decisiones.')
+        contexto={**p,'id_club_identificado':propuesta['id_club_identificado']}
+        if recordar:
+            memoria.guardar(conexion,contexto,dni,'variante')
+        permitidos={c['dni'] for c in candidatos}
+        for descartado in set(descartes):
+            if descartado==dni or descartado not in permitidos:
+                raise ValidacionError('Solo puedes descartar otras fichas mostradas como candidatas en esta revisión.')
+            memoria.guardar(conexion,contexto,descartado,'descarte')
     datos.actualizar_revision(conexion, participante, propuesta, estado)
     fila = datos.fila_revision(conexion, p['id_fila'])
     _refrescar_fila(conexion, fila, imp['numero_tripulantes'])

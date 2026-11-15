@@ -137,6 +137,32 @@ class PantallaRevision(unittest.TestCase):
         self.at.run()
         self.mocks[3].assert_called_once()
 
+    def test_recordar_variante_necesita_club_y_se_envia_solo_al_confirmar(self):
+        self.at.run()
+        recordar=next(c for c in self.at.checkbox if c.label=='Recordar este nombre como variante de la ficha confirmada')
+        self.assertFalse(recordar.value)
+        next(s for s in self.at.selectbox if s.label.startswith('Ficha existente')).set_value('D1').run()
+        next(s for s in self.at.selectbox if s.label=='Club identificado en la clasificación').set_value(1).run()
+        next(c for c in self.at.checkbox if c.label=='Recordar este nombre como variante de la ficha confirmada').check().run()
+        next(c for c in self.at.checkbox if c.label.startswith('Confirmo que la ficha')).check().run()
+        self.boton('Vincular ficha seleccionada').click().run()
+        self.assertTrue(self.mocks[3].call_args.args[3]['recordar_nombre'])
+        self.assertEqual(len(self.at.exception),0)
+
+    def test_decisiones_recordadas_pueden_olvidarse_con_confirmacion(self):
+        from services import memoria_nombres
+        guardadas=[dict(tipo='variante',dni_deportista='D1',nombre='Ana',apellidos='Pérez',nombre_original='Anita Pérez')]
+        with patch.object(memoria_nombres,'listar',return_value=guardadas), patch.object(memoria_nombres,'olvidar_en_proveedor') as olvidar:
+            self.at.run()
+            next(c for c in self.at.checkbox if c.label=='Consultar o corregir decisiones de nombres recordadas').check().run()
+            selector=next(m for m in self.at.multiselect if m.label=='Decisiones que quieres olvidar')
+            selector.set_value([0]).run()
+            self.assertTrue(self.boton('Olvidar decisiones seleccionadas').disabled)
+            next(c for c in self.at.checkbox if c.label.startswith('Confirmo que quiero olvidar')).check().run()
+            self.boton('Olvidar decisiones seleccionadas').click().run()
+            self.assertEqual(olvidar.call_args.args[3],[dict(tipo='variante',dni='D1')])
+            self.assertEqual(len(self.at.exception),0)
+
     def test_creacion_valida_obligatorios_y_no_infiere_nacimiento(self):
         self.at.run();self.decision('Crear deportista')
         self.assertTrue(self.boton('Crear deportista y guardar resultado').disabled)

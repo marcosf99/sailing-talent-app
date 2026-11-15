@@ -76,7 +76,7 @@ def _sugerir_club(grupo, clubes, aliases):
 
 
 def _version_ficha(ficha):
-    return _huella({k: ficha.get(k) for k in ('dni', 'nombre', 'apellidos', 'fecha_nacimiento', 'sexo', 'id_club')})
+    return _huella({k: ficha.get(k) for k in ('dni', 'nombre', 'apellidos', 'fecha_nacimiento', 'sexo', 'id_club', 'memoria_nombres')})
 
 
 def _propuestas(c, contenido, fichas, aliases):
@@ -91,7 +91,9 @@ def _propuestas(c, contenido, fichas, aliases):
                           and sum(f['dni'].upper() == documento for f in fichas) == 1)
             clara = (primero['indice_similitud'] >= Decimal('.75') and (len(candidatos) == 1
                      or primero['indice_similitud']-candidatos[1]['indice_similitud'] >= Decimal('.05')))
-            if exacto or clara:
+            nacimiento = p.get('fecha_nacimiento_propuesta')
+            compatible = not (nacimiento and primero.get('fecha_nacimiento') and nacimiento != primero['fecha_nacimiento'])
+            if exacto or (clara and compatible):
                 propuesta = {**primero, 'version_ficha': _version_ficha(primero)}
                 motivo = primero['motivos']
             else:
@@ -225,14 +227,18 @@ def confirmar_vinculos(engine, identificador, decisiones, version, *, confirmar=
             confirmados = {p['dni_deportista_confirmado'] for p in contenido['participantes']
                            if p['id_fila'] in seleccionadas and p['dni_deportista_confirmado']}
             for d in decisiones:
-                if not isinstance(d, dict) or set(d) != {'participante', 'dni', 'version_ficha', 'rol'}:
+                if not isinstance(d, dict) or not {'participante', 'dni', 'version_ficha', 'rol'} <= set(d) or set(d) - {'participante', 'dni', 'version_ficha', 'rol', 'recordar_nombre'}:
                     raise ValidacionError('Una vinculación contiene campos inválidos.')
                 ident = base._entero(d['participante'], 'id_participante_importado')
                 if ident in vistos or ident not in propuestas:
                     raise ConflictoError('Un participante está repetido o ya no está pendiente.')
                 vistos.add(ident)
                 r, dni = propuestas[ident], d['dni']
+                if type(d.get('recordar_nombre',False)) is not bool:
+                    raise ValidacionError('Confirma si quieres recordar los nombres del lote.')
                 p = r['participante']
+                if d.get('recordar_nombre') and p['id_club_identificado'] is None:
+                    raise ValidacionError(f"{p['nombre_original']}: confirma el club de la fuente antes de recordar el nombre.")
                 contexto = f"Puesto {p['fila']['posicion_general']} · {p['nombre_original']}: "
                 ficha = r['propuesta']
                 if not ficha or dni != ficha['dni'] or d['version_ficha'] != ficha['version_ficha']:
@@ -257,6 +263,10 @@ def confirmar_vinculos(engine, identificador, decisiones, version, *, confirmar=
             datos.marcar_en_revision(c,identificador)
             datos.guardar_vinculos_lote(c, [dict(id=ident,dni=dni,rol=campos['rol_propuesto'])
                                           for ident,campos,_,dni in sorted(preparadas)])
+            from services import memoria_nombres
+            for d in decisiones:
+                if d.get('recordar_nombre'):
+                    memoria_nombres.guardar(c,propuestas[d['participante']]['participante'],d['dni'],'variante')
             actual = _contenido(c, identificador)
             afectadas = {propuestas[i]['participante']['id_fila'] for i in vistos}
             estados = []

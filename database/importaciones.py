@@ -208,15 +208,26 @@ def actualizar_importacion(conexion, identificador, campos):
 
 def fichas_revision(conexion):
     """Datos mínimos para cotejar nombres y contexto sin extensiones PostgreSQL."""
-    return [dict(r) for r in conexion.execute(text("""
-        SELECT d.dni, d.nombre, d.apellidos, d.fecha_nacimiento, d.sexo,
-               d.id_club, c.nombre AS club, c.id_federacion,
-               f.nombre AS federacion
+    filas = conexion.execute(text("""
+        SELECT d.dni,d.nombre,d.apellidos,d.fecha_nacimiento,d.sexo,d.id_club,
+               c.nombre AS club,c.id_federacion,f.nombre AS federacion,
+               m.tipo AS memoria_tipo,m.id_club AS memoria_club,m.nombre_normalizado AS memoria_nombre
         FROM public.deportista d
         LEFT JOIN public.club c ON c.id_club=d.id_club
         LEFT JOIN public.federacion_autonomica f ON f.id_federacion=c.id_federacion
-        ORDER BY d.dni
-    """).columns(fecha_nacimiento=Date())).mappings()]
+        LEFT JOIN (
+            SELECT dni_deportista,id_club,nombre_normalizado,'variante' AS tipo FROM public.variante_nombre_deportista
+            UNION ALL
+            SELECT dni_deportista,id_club,nombre_normalizado,'descarte' AS tipo FROM public.descarte_nombre_deportista
+        ) m ON m.dni_deportista=d.dni ORDER BY d.dni,m.tipo,m.nombre_normalizado,m.id_club
+    """).columns(fecha_nacimiento=Date())).mappings()
+    fichas={}
+    for r in filas:
+        ficha=fichas.setdefault(r['dni'],{k:v for k,v in r.items() if not k.startswith('memoria_')})
+        memoria=ficha.setdefault('memoria_nombres',[])
+        if r['memoria_tipo']:
+            memoria.append(dict(tipo=r['memoria_tipo'],id_club=r['memoria_club'],nombre_normalizado=r['memoria_nombre']))
+    return list(fichas.values())
 
 
 def aliases_revision(conexion):

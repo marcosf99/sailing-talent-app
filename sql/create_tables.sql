@@ -692,4 +692,29 @@ ALTER TABLE alias_club ENABLE ROW LEVEL SECURITY;
 -- la seleccion ESP/40/80 y la escritura atomica del resultado se aplicaran
 -- en el servicio de importacion. Este script crea solo el soporte de datos.
 
+-- Memoria de decisiones explícitas; una variante puede corresponder a homónimos.
+CREATE TABLE variante_nombre_deportista (
+    dni_deportista VARCHAR(20) NOT NULL REFERENCES deportista(dni) ON UPDATE CASCADE ON DELETE RESTRICT,
+    id_club INTEGER NOT NULL REFERENCES club(id_club) ON UPDATE CASCADE ON DELETE RESTRICT,
+    nombre_original TEXT NOT NULL CHECK (BTRIM(nombre_original)<>''),
+    nombre_normalizado TEXT NOT NULL CHECK (BTRIM(nombre_normalizado)<>''),
+    id_participante_origen INTEGER REFERENCES participante_importado(id_participante_importado) ON DELETE SET NULL,
+    confirmado_en TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (dni_deportista,id_club,nombre_normalizado)
+);
+CREATE INDEX idx_variante_nombre_deportista_buscar ON variante_nombre_deportista(nombre_normalizado,id_club);
+ALTER TABLE variante_nombre_deportista ENABLE ROW LEVEL SECURITY;
+
+CREATE TABLE descarte_nombre_deportista (
+    dni_deportista VARCHAR(20) NOT NULL REFERENCES deportista(dni) ON UPDATE CASCADE ON DELETE RESTRICT,
+    id_club INTEGER NOT NULL REFERENCES club(id_club) ON UPDATE CASCADE ON DELETE RESTRICT,
+    nombre_original TEXT NOT NULL CHECK (BTRIM(nombre_original)<>''),
+    nombre_normalizado TEXT NOT NULL CHECK (BTRIM(nombre_normalizado)<>''),
+    id_participante_origen INTEGER REFERENCES participante_importado(id_participante_importado) ON DELETE SET NULL,
+    confirmado_en TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (dni_deportista,id_club,nombre_normalizado)
+);
+CREATE INDEX idx_descarte_nombre_deportista_buscar ON descarte_nombre_deportista(nombre_normalizado,id_club);
+ALTER TABLE descarte_nombre_deportista ENABLE ROW LEVEL SECURITY;
+
 COMMIT;
