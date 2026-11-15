@@ -72,11 +72,6 @@ def _metadatos(campos):
     salida['tipo_clasificacion'] = campos.get('tipo_clasificacion')
     if salida['tipo_clasificacion'] not in ('provisional', 'definitiva'):
         raise ValidacionError('Confirma si la clasificación es provisional o definitiva.')
-    if 'fecha_fin_etapa_historica' in campos:
-        cierre = campos['fecha_fin_etapa_historica']
-        if type(cierre) is not date or cierre > date.today() or cierre < salida['fecha_fin']:
-            raise ValidacionError('Indica el fin manual de la etapa histórica: debe cubrir la regata y no puede ser futuro.')
-        salida['fecha_fin_etapa_historica'] = cierre
     return salida
 
 
@@ -154,14 +149,6 @@ def _anticipar_unidad(conexion, unidad, roles, clase, inicio, fin):
         raise ConflictoError(causa + ' ' + _detalle_unidad(conexion, unidad) + ' Revisa las identidades y roles antes de incorporar.')
     if u['fecha_fin'] is not None and u['fecha_fin'] < fin:
         raise ConflictoError('El cierre de la unidad no cubre el final de la regata (' + _fecha_aviso(fin) + '). ' + _detalle_unidad(conexion, unidad))
-    conflicto = conexion.execute(text('''SELECT DISTINCT u.id_unidad FROM public.unidad_competitiva u
-        JOIN public.forma_parte fp ON fp.id_unidad=u.id_unidad
-        WHERE u.id_clase=:clase AND fp.dni_deportista IN :dnis AND u.id_unidad<>:id
-          AND u.fecha_inicio<=:anterior AND (u.fecha_fin IS NULL OR u.fecha_fin>=:inicio)
-    ''').bindparams(bindparam('dnis', expanding=True)),
-        {'clase': clase, 'dnis': sorted(roles), 'id': unidad, 'anterior': u['fecha_inicio'], 'inicio': inicio}).first()
-    if conflicto:
-        raise ConflictoError('Adelantar el inicio al ' + _fecha_aviso(inicio) + ' solaparía otra etapa de esta clase. ' + _detalle_unidad(conexion, conflicto[0]) + ' Revisa las fechas de ambas etapas.')
     if inicio < u['fecha_inicio']:
         conexion.execute(text('UPDATE public.unidad_competitiva SET fecha_inicio=:inicio WHERE id_unidad=:id'),
                          {'inicio': inicio, 'id': unidad})
@@ -180,73 +167,49 @@ def _unidad(conexion, imp, campos, miembros, *, personas=None):
     if any(p['fecha_nacimiento'] and p['fecha_nacimiento'] > campos['fecha_inicio'] for p in personas):
         raise ValidacionError('Un deportista nació después de la regata. Revisa las identidades y las fechas.')
     limite = validar_edad(imp['nombre_clase'], personas, campos['fecha_inicio'], campos['fecha_fin'])
-    consulta = text('''
-        SELECT DISTINCT u.id_unidad, u.fecha_inicio, u.fecha_fin
-        FROM public.unidad_competitiva u JOIN public.forma_parte fp ON fp.id_unidad=u.id_unidad
-        WHERE u.id_clase=:clase AND fp.dni_deportista IN :dnis
-          AND u.fecha_inicio<=:fin AND (u.fecha_fin IS NULL OR u.fecha_fin>=:inicio)
-        ORDER BY u.id_unidad
-    ''').bindparams(bindparam('dnis', expanding=True)).columns(fecha_inicio=Date(), fecha_fin=Date())
-    unidades = conexion.execute(consulta, {'dnis': sorted(roles), 'clase': imp['id_clase'],
-                                          'inicio': campos['fecha_inicio'], 'fin': campos['fecha_fin']}).mappings().all()
-    if unidades:
-        if len(unidades) == 1:
-            # Coordinarse con la finalización de unidades: volver a leer sus
-            # fechas después de obtener el mismo bloqueo que usa esa operación.
-            u = conexion.execute(text('''SELECT id_unidad, fecha_inicio, fecha_fin
-                FROM public.unidad_competitiva WHERE id_unidad=:id FOR UPDATE
-            ''').columns(fecha_inicio=Date(), fecha_fin=Date()),
-                {'id': unidades[0]['id_unidad']}).mappings().first()
-            if u is None:
-                raise ConflictoError('El equipo cambió durante la incorporación. Actualiza los datos.')
-            actuales = {r['dni_deportista']: r['rol'] for r in conexion.execute(text(
-                'SELECT dni_deportista, rol FROM public.forma_parte WHERE id_unidad=:id'), {'id': u['id_unidad']}).mappings()}
-            if (actuales == roles and u['fecha_inicio'] <= campos['fecha_inicio']
-                    and (u['fecha_fin'] is None or u['fecha_fin'] >= campos['fecha_fin'])):
-                return u['id_unidad']
-            if actuales == roles and u['fecha_inicio'] > campos['fecha_inicio']:
-                return _anticipar_unidad(conexion, u['id_unidad'], roles, imp['id_clase'],
-                                         campos['fecha_inicio'], campos['fecha_fin'])
-        raise ConflictoError('La regata coincide con una unidad que no admite esa tripulación o esas fechas. ' + ' '.join(_detalle_unidad(conexion, u['id_unidad']) for u in unidades) + ' Revisa pareja, roles y fechas de la etapa existente.')
-    # Buscar primero la etapa posterior más cercana: se puede adelantar su
-    # inicio si conserva miembros, roles y cierre y no cruza otra etapa.
-    filtro_limite = ' AND u.fecha_inicio<=:limite' if limite else ''
-    futura = conexion.execute(text('''
-        SELECT DISTINCT u.id_unidad, u.fecha_inicio FROM public.unidad_competitiva u
-        JOIN public.forma_parte fp ON fp.id_unidad=u.id_unidad
-        WHERE u.id_clase=:clase AND fp.dni_deportista IN :dnis
-          AND u.fecha_inicio>:fin
-    ''' + filtro_limite + ' ORDER BY u.fecha_inicio, u.id_unidad').bindparams(bindparam('dnis', expanding=True)),
-        {'clase': imp['id_clase'], 'dnis': sorted(roles), 'fin': campos['fecha_fin'], 'limite': limite}).first()
-    cierre_historico = None
-    if futura:
-        # Bloquear y comparar antes de decidir entre ampliar el mismo equipo
-        # o registrar una etapa diferente con cierre manual explícito.
-        conexion.execute(text('SELECT id_unidad FROM public.unidad_competitiva WHERE id_unidad=:id FOR UPDATE'),
-                         {'id':futura.id_unidad}).first()
-        posteriores = {r['dni_deportista']:r['rol'] for r in conexion.execute(text(
-            'SELECT dni_deportista,rol FROM public.forma_parte WHERE id_unidad=:id'),
-            {'id':futura.id_unidad}).mappings()}
-        if posteriores == roles:
-            return _anticipar_unidad(conexion, futura.id_unidad, roles, imp['id_clase'],
-                                     campos['fecha_inicio'], campos['fecha_fin'])
-        cierre_historico = campos.get('fecha_fin_etapa_historica')
-        if imp['numero_tripulantes'] != 2 or cierre_historico is None:
-            causa = 'La pareja es distinta.' if set(posteriores) != set(roles) else 'Los miembros coinciden, pero sus roles son distintos.'
-            raise ConflictoError(causa + ' ' + _detalle_unidad(conexion, futura.id_unidad) + ' Para registrar una etapa histórica distinta, indica su fecha de finalización manual en Datos de la regata. No se cambió el equipo posterior.')
-        solapa = conexion.execute(text('''
-            SELECT DISTINCT u.id_unidad FROM public.unidad_competitiva u
-            JOIN public.forma_parte fp ON fp.id_unidad=u.id_unidad
-            WHERE u.id_clase=:clase AND fp.dni_deportista IN :dnis
-              AND u.fecha_inicio<=:cierre AND (u.fecha_fin IS NULL OR u.fecha_fin>=:inicio)
-        ''').bindparams(bindparam('dnis',expanding=True)),
-            {'clase':imp['id_clase'],'dnis':sorted(roles),'inicio':campos['fecha_inicio'],'cierre':cierre_historico}).first()
-        if solapa:
-            raise ConflictoError('El fin indicado para la etapa histórica (' + _fecha_aviso(cierre_historico) + ') solapa otra unidad. ' + _detalle_unidad(conexion, solapa[0]) + ' Elige una fecha anterior al inicio del siguiente equipo; no se guardó el lote.')
+    unidades = conexion.execute(text('''
+        SELECT u.id_unidad,u.fecha_inicio,u.fecha_fin FROM public.unidad_competitiva u
+        WHERE u.id_clase=:clase AND EXISTS (
+            SELECT 1 FROM public.forma_parte fp WHERE fp.id_unidad=u.id_unidad
+            AND fp.dni_deportista IN :dnis)
+        ORDER BY u.id_unidad FOR UPDATE
+    ''').bindparams(bindparam('dnis',expanding=True)).columns(fecha_inicio=Date(),fecha_fin=Date()),
+        {'clase':imp['id_clase'],'dnis':sorted(roles)}).mappings().all()
+    equipos = {u['id_unidad']:{} for u in unidades}
+    if equipos:
+        for p in conexion.execute(text('SELECT id_unidad,dni_deportista,rol FROM public.forma_parte WHERE id_unidad IN :ids')
+                .bindparams(bindparam('ids',expanding=True)),{'ids':sorted(equipos)}).mappings():
+            equipos[p['id_unidad']][p['dni_deportista']] = p['rol']
+    iguales = [u for u in unidades if equipos[u['id_unidad']] == roles]
+    compatibles = [u for u in iguales if u['fecha_inicio']<=campos['fecha_inicio']
+                   and (u['fecha_fin'] is None or u['fecha_fin']>=campos['fecha_fin'])]
+    if len(compatibles)>1:
+        raise ConflictoError('Hay varias unidades del mismo equipo que cubren esta regata. ' +
+            ' '.join(_detalle_unidad(conexion,u['id_unidad']) for u in compatibles) + ' Revisa las unidades duplicadas antes de incorporar.')
+    if compatibles:
+        return compatibles[0]['id_unidad']
+    futuras = sorted((u for u in iguales if u['fecha_inicio']>campos['fecha_inicio']
+                      and (u['fecha_fin'] is None or u['fecha_fin']>=campos['fecha_fin'])
+                      and (limite is None or u['fecha_inicio']<=limite)),key=lambda u:u['fecha_inicio'])
+    if futuras:
+        futura = futuras[0]
+        # Conservar etapas cerradas del mismo equipo; otras parejas pueden coexistir.
+        barreras = [u for u in iguales if u['id_unidad']!=futura['id_unidad']
+                    and u['fecha_inicio']<=futura['fecha_inicio']
+                    and (u['fecha_fin'] is None or u['fecha_fin']>=campos['fecha_inicio'])]
+        if barreras:
+            raise ConflictoError('Ampliar el mismo equipo uniría etapas distintas. ' +
+                ' '.join(_detalle_unidad(conexion,u['id_unidad']) for u in barreras) + ' Revisa sus fechas manualmente.')
+        return _anticipar_unidad(conexion,futura['id_unidad'],roles,imp['id_clase'],campos['fecha_inicio'],campos['fecha_fin'])
+    parciales = [u for u in iguales if u['fecha_inicio']<=campos['fecha_fin']
+                 and (u['fecha_fin'] is None or u['fecha_fin']>=campos['fecha_inicio'])]
+    if parciales:
+        raise ConflictoError('Una etapa cerrada del mismo equipo no cubre las fechas completas de la regata. ' +
+            ' '.join(_detalle_unidad(conexion,u['id_unidad']) for u in parciales) + ' Revisa sus fechas de cierre.')
     unidad = conexion.execute(text('''
         INSERT INTO public.unidad_competitiva(fecha_inicio,fecha_fin,id_clase)
         VALUES (:inicio,:fin,:clase) RETURNING id_unidad
-    '''), {'inicio': campos['fecha_inicio'], 'fin': cierre_historico or fin_vencido(limite), 'clase': imp['id_clase']}).scalar_one()
+    '''), {'inicio': campos['fecha_inicio'], 'fin': fin_vencido(limite), 'clase': imp['id_clase']}).scalar_one()
     # Abierta hasta cierre manual o edad ya vencida. Nunca programar una fecha
     # final futura: el usuario puede terminar la unidad antes de ese límite.
     conexion.execute(text('INSERT INTO public.forma_parte(dni_deportista,id_unidad,rol) VALUES (:dni,:unidad,:rol)'),

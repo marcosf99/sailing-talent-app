@@ -20,6 +20,9 @@ class RevisionLotes(unittest.TestCase):
         self.filas = [self.db.filas[0], {**self.db.filas[0], 'numero_fila': 2,
             'posicion_general': 2, 'participantes': [{'nombre_original': 'Luis Lago', 'club_original': 'Club A'}]}]
         self.ident = self.db.crear(filas=self.filas)
+        # Escenario explícito de borrador antiguo con clubes aún pendientes.
+        with self.engine.begin() as c:
+            c.exec_driver_sql('UPDATE participante_importado SET id_club_identificado=NULL')
 
     def resumen(self, ident=None):
         return s.cargar_resumen(self.engine, ident or self.ident)
@@ -68,9 +71,8 @@ class RevisionLotes(unittest.TestCase):
             s.confirmar_clubes(self.engine,self.ident,[decision],confirmar=True)
         self.assertEqual(self.db.contar('alias_club'),1)
         ident=self.db.crear()
-        g=self.resumen(ident)['grupos_club'][0]
-        self.assertEqual(g['id_club_propuesto'],1)
-        self.assertIn('confirmada',g['motivo'])
+        self.assertEqual(self.resumen(ident)['grupos_club'],[])
+        self.assertTrue(all(p['id_club_identificado']==1 for p in base.obtener_borrador(self.engine,ident)['participantes']))
 
     def test_alias_en_otro_contexto_no_se_aplica_globalmente(self):
         base.registrar_alias_club(self.engine,'Abreviatura especial',2,'Otra fuente')
@@ -287,17 +289,14 @@ class RevisionLotes(unittest.TestCase):
         b=base.obtener_borrador(self.engine,ident)
         self.assertEqual([p['dni_deportista_confirmado'] for p in b['participantes']],[None,None,'D3',None])
 
-    def test_lote_anterior_no_adelanta_equipo_con_roles_distintos_y_revierte_vinculos(self):
+    def test_lote_con_roles_distintos_crea_equipo_independiente(self):
         ident,campos,r,decisiones=self.preparar_dobles_mixtos()
-        decisiones[0]['rol']='Tripulante'
-        decisiones[1]['rol']='Patron'
-        with self.assertRaises(ConflictoError):
-            s.confirmar_vinculos(self.engine,ident,decisiones,r['version'],confirmar=True,datos_resultado=campos)
-        b=base.obtener_borrador(self.engine,ident)
-        self.assertTrue(all(p['dni_deportista_confirmado'] is None for p in b['participantes']))
+        decisiones[0]['rol']='Tripulante';decisiones[1]['rol']='Patron'
+        salida=s.confirmar_vinculos(self.engine,ident,decisiones,r['version'],confirmar=True,datos_resultado=campos)
+        self.assertEqual(salida['resultados_incorporados'],1)
         with self.engine.connect() as c:
             self.assertEqual(c.exec_driver_sql('SELECT fecha_inicio FROM unidad_competitiva WHERE id_unidad=1').scalar_one(),'2026-10-20')
-        self.assertEqual(self.db.contar('participa_en'),0)
+        self.assertEqual(self.db.contar('unidad_competitiva'),2)
 
     def test_lote_con_puntuacion_ausente_no_se_trata_como_pareja_pendiente(self):
         ident,campos,r,decisiones=self.preparar_dobles_mixtos()
@@ -336,7 +335,7 @@ class RevisionLotes(unittest.TestCase):
                 s.crear_nuevos(self.engine,self.ident,decisiones,r['version'],campos,confirmar=True)
             self.assertEqual(self.db.contar('deportista'),2)
 
-    def test_alta_con_pareja_anterior_cierre_manual_preserva_equipo_y_resultado_posteriores(self):
+    def test_alta_con_pareja_anterior_abierta_preserva_equipo_y_resultado_posteriores(self):
         ident,campos,r,decisiones=self.preparar_dobles_mixtos()
         with self.engine.begin() as c:
             c.exec_driver_sql("DELETE FROM forma_parte WHERE id_unidad=1 AND dni_deportista='D1'")
@@ -348,26 +347,12 @@ class RevisionLotes(unittest.TestCase):
         p=next(x for x in r['propuestas'] if x['participante']['nombre_original']=='Zacarías Velázquez Taboada')
         alta=dict(participante=p['participante']['id_participante_importado'],version=p['version'],campos=dict(
             nombre='Zacarías',apellidos='Velázquez Taboada',id_club=1,rol_propuesto='Tripulante',fecha_nacimiento=None,sexo=None))
-        with self.assertRaisesRegex(ConflictoError,'etapa histórica') as error:
-            s.crear_nuevos(self.engine,ident,[alta],r['version'],campos,confirmar=True)
-        mensaje=str(error.exception)
-        for esperado in ('Puesto 2', 'Elena Robles', 'Zacarías Velázquez Taboada', 'Luis Lago',
-                         'La pareja es distinta', '03/10/2026', '04/10/2026', '20/10/2026',
-                         'sin cierre', 'No se guardó ninguna parte del lote'):
-            self.assertIn(esperado,mensaje)
-        self.assertNotIn('TEMP-',mensaje)
-        self.assertNotIn('D3',mensaje)
-        self.assertEqual(self.db.contar('deportista'),3)
-        for cierre in (date(2026,10,20),date(2026,10,21)):
-            with self.assertRaisesRegex(ConflictoError,'solapa'):
-                s.crear_nuevos(self.engine,ident,[alta],r['version'],{**campos,'fecha_fin_etapa_historica':cierre},confirmar=True)
-            self.assertEqual(self.db.contar('deportista'),3)
-        salida=s.crear_nuevos(self.engine,ident,[alta],r['version'],{**campos,'fecha_fin_etapa_historica':date(2026,10,4)},confirmar=True)
+        salida=s.crear_nuevos(self.engine,ident,[alta],r['version'],campos,confirmar=True)
         self.assertEqual(salida,dict(creados=1,resultados_incorporados=1))
         with self.engine.connect() as c:
             self.assertEqual(c.exec_driver_sql('SELECT fecha_inicio,fecha_fin FROM unidad_competitiva WHERE id_unidad=1').one(),('2026-10-20',None))
             self.assertEqual(c.exec_driver_sql('SELECT dni_deportista,rol FROM forma_parte WHERE id_unidad=1 ORDER BY dni_deportista').all(),[('D2','Tripulante'),('D3','Patron')])
-            self.assertEqual(c.exec_driver_sql('SELECT fecha_inicio,fecha_fin FROM unidad_competitiva WHERE id_unidad<>1').one(),('2026-10-03','2026-10-04'))
+            self.assertEqual(c.exec_driver_sql('SELECT fecha_inicio,fecha_fin FROM unidad_competitiva WHERE id_unidad<>1').one(),('2026-10-03',None))
             self.assertEqual(c.exec_driver_sql('SELECT posicion_general,puntos FROM participa_en WHERE id_competicion=2').one(),(1,12))
         self.assertEqual(self.db.contar('participa_en'),2)
 

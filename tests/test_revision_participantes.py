@@ -49,7 +49,7 @@ class RevisionParticipantes(unittest.TestCase):
         base.registrar_alias_club(self.engine, 'Club A', 1)
         p = self.persona()
         r = s.buscar_coincidencias(self.engine, p['id_participante_importado'])[0]
-        self.assertIn('alias confirmado', r['motivos'])
+        self.assertIn('club identificado', r['motivos'])
 
     def test_creacion_vincula_sin_crear_resultados(self):
         self.guardar('crear', confirmar_nuevo_distinto=True)
