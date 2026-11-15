@@ -124,6 +124,62 @@ class TablasRevision(unittest.TestCase):
         self.assertNotIn('dni',llamada[3][0]['campos'])
         self.assertEqual(llamada[3][0]['campos']['id_club'],1)
 
+    def test_identidades_dudosas_visibles_con_nombres_de_las_fichas_similares(self):
+        r=self.resumen['propuestas'][0]
+        r.update(propuesta=None,coincidencias=1,candidatos=[{'nombre':'Otra','apellidos':'Persona'}])
+        self.at.run()
+        self.assertEqual(len(self.at.exception),0)
+        self.assertEqual(self.at.table[0].value['Participante pendiente'].tolist(),['Ana Pérez'])
+        self.assertEqual(self.at.table[0].value['Fichas similares que comprobar'].tolist(),['Otra Persona'])
+        self.mocks[1].assert_not_called()
+
+    def test_seleccionar_todas_altas_omite_equipo_con_companero_dudoso(self):
+        from datetime import date
+        self.at.session_state['datos_regata_prueba']=dict(nombre='Vigo',fecha_inicio=date(2026,10,3),fecha_fin=date(2026,10,4),localidad='Vigo',tipo_clasificacion='definitiva')
+        self.revision['importacion']['numero_tripulantes']=2
+        primero,segundo=self.revision['participantes']
+        segundo.update(id_fila=primero['id_fila'],orden_en_tripulacion=2,rol_propuesto='Tripulante')
+        primero['rol_propuesto']='Patron'
+        for r in self.resumen['propuestas']:
+            r['participante'].update(id_fila=primero['id_fila'],rol_propuesto='Patron',id_club_identificado=1)
+        self.resumen['propuestas'][0].update(propuesta=None,coincidencias=0)
+        self.resumen['propuestas'][1].update(propuesta=None,coincidencias=1)
+        self.at.run()
+        next(c for c in self.at.checkbox if c.label=='Seleccionar todas las altas propuestas').check().run()
+        tabla=next(d.value for d in self.at.dataframe if 'Crear' in d.value)
+        self.assertFalse(tabla['Crear'].any())
+        self.assertIn('Luis Lago',tabla.iloc[0]['Estado del equipo'])
+        self.assertTrue(self.boton('Crear fichas seleccionadas e incorporar resultados').disabled)
+        self.mocks[1].assert_not_called()
+
+    def test_mensaje_lote_con_equipos_pendientes_distingue_vinculos_y_resultados(self):
+        from datetime import date
+        self.at.session_state['datos_regata_prueba']=dict(nombre='Vigo',fecha_inicio=date(2026,10,3),fecha_fin=date(2026,10,4),localidad='Vigo',tipo_clasificacion='definitiva')
+        self.mocks[1].return_value=dict(vinculados=2,resultados_incorporados=1,equipos_pendientes=1)
+        self.at.run()
+        next(c for c in self.at.checkbox if c.label=='Seleccionar todas las coincidencias propuestas').check().run()
+        next(c for c in self.at.checkbox if c.label.startswith('Confirmo que cada ficha')).check().run()
+        next(c for c in self.at.checkbox if c.label.startswith('He revisado los datos de la regata')).check().run()
+        self.boton('Vincular e incorporar resultados seleccionados').click().run()
+        self.assertTrue(any('1 equipos esperan la identidad del otro miembro' in m.value for m in self.at.success))
+        self.assertEqual(len(self.at.exception),0)
+
+    def test_altas_similares_exigen_confirmacion_adicional_antes_del_guardado(self):
+        from datetime import date
+        self.at.session_state['datos_regata_prueba']=dict(nombre='Vigo',fecha_inicio=date(2026,10,3),fecha_fin=date(2026,10,4),localidad='Vigo',tipo_clasificacion='definitiva')
+        for r,nombre in zip(self.resumen['propuestas'],['Lucas','Nicolas']):
+            r.update(propuesta=None,coincidencias=0)
+            r['participante'].update(id_club_identificado=1,nombre_propuesto=nombre,apellidos_propuestos='Montoya Porland')
+        self.at.run()
+        next(c for c in self.at.checkbox if c.label=='Seleccionar todas las altas propuestas').check().run()
+        next(c for c in self.at.checkbox if c.label.startswith('He revisado las altas seleccionadas')).check().run()
+        self.assertTrue(self.boton('Crear fichas seleccionadas e incorporar resultados').disabled)
+        next(c for c in self.at.checkbox if c.label.startswith('Confirmo que las personas con nombres similares')).check().run()
+        self.assertFalse(self.boton('Crear fichas seleccionadas e incorporar resultados').disabled)
+        self.boton('Crear fichas seleccionadas e incorporar resultados').click().run()
+        self.assertEqual(len(self.at.exception),0)
+        self.assertTrue(all(d['confirmar_distinto_lote'] for d in self.mocks[1].call_args.args[3]))
+
     def test_club_seleccionado_y_recordatorio_opcional(self):
         self.at.run();self.editar('clubes',{0:{'Confirmar':True,'Recordar equivalencia':True,'Club identificado':'Club B · Baleares'}})
         self.assertTrue(self.boton('Confirmar clubes seleccionados').disabled)

@@ -169,6 +169,36 @@ class VistaPrevia(unittest.TestCase):
         self.assertEqual(len(self.at.exception), 0)
         self.assertTrue(self.at.get('imgs'))
 
+    def test_dobles_precarga_miembros_y_exige_confirmar_orden_roles(self):
+        self.pdf=crear_pdf([[['1','ESP 12','Ana Lago\nLuis Perez\nC.M.Canido','S16','1','10','9','1']]],encabezados=[
+            (20,'Pos'),(80,'Barco'),(180,'Tripulacion'),(300,'Cat'),(360,'1'),(420,'TOTAL'),(500,'NET'),(555,'Pos')])
+        self.archivo=BytesIO(self.pdf);self.archivo.name='dobles.pdf';self.mocks[0].return_value=self.archivo
+        self.analizar();self.configurar()
+        self.at.selectbox(key='importacion_clase').set_value(2).run()
+        self.at.selectbox(key='importacion_nombres_2').set_value('dobles_escora').run()
+        editor=next(df.value for df in self.at.dataframe if 'Rol 1' in df.value)
+        self.assertEqual(editor.iloc[0]['Nombre 1'],'Ana Lago')
+        self.assertEqual(editor.iloc[0]['Nombre 2'],'Luis Perez')
+        self.assertIsNone(editor.iloc[0]['Rol 1'])
+        self.at.checkbox(key='importacion_orden_roles').check().run()
+        self.revisar()
+        self.at.button(key='importacion_guardar').click().run()
+        self.assertEqual(len(self.at.exception),0)
+        miembros=self.mocks[2].call_args.args[3][0]['participantes']
+        self.assertEqual([p['rol_propuesto'] for p in miembros],['Patron','Tripulante'])
+        self.assertTrue(all(p['club_original'] is None for p in miembros))
+
+    def test_editar_nombre_sailti_no_conserva_propuesta_de_otro_nombre(self):
+        fuente=dict(numero_fila=1,pagina_origen=1,datos_originales={'celdas':{}},posicion_general=1,puntos=2,
+            numero_vela_original='ESP 1',categoria_original=None,participantes=[
+                dict(nombre_original='LAGO, Ana',nombre_propuesto='Ana',apellidos_propuestos='LAGO',club_original='Club')])
+        import pandas as pd
+        marco=pd.DataFrame([{'Fila':1,'Posición general':'1','Puntos':'2','Vela':'ESP 1','Categoría':'',
+            'Nombre 1':'RÍOS, Berta','Club 1':'Club','Rol 1':'Patrón','Nombre 2':'Luis Pérez','Club 2':'Otro','Rol 2':'Tripulante'}])
+        p=vista._filas_editadas(marco,[fuente],2)[0]['participantes'][0]
+        self.assertNotIn('nombre_propuesto',p)
+        self.assertEqual(p['nombre_original'],'RÍOS, Berta')
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

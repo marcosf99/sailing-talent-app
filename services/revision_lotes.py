@@ -97,7 +97,8 @@ def _propuestas(c, contenido, fichas, aliases):
             else:
                 motivo = 'Coincidencias ambiguas: revisión individual'
         salida.append({'participante': p, 'version': revision.version_participante(p),
-                       'propuesta': propuesta, 'motivo': motivo, 'coincidencias': len(candidatos)})
+                       'propuesta': propuesta, 'motivo': motivo, 'coincidencias': len(candidatos),
+                       'candidatos': candidatos})
     documentos = [r['propuesta']['dni'] for r in salida if r['propuesta']]
     confirmados = {p['dni_deportista_confirmado'] for p in contenido['participantes']
                    if p['dni_deportista_confirmado'] and any(
@@ -107,6 +108,52 @@ def _propuestas(c, contenido, fichas, aliases):
         if r['propuesta'] and (documentos.count(r['propuesta']['dni']) > 1 or r['propuesta']['dni'] in confirmados):
             r['propuesta'] = None
             r['motivo'] = 'La ficha aparece en otra posición de esta clasificación: revisión individual'
+    return salida
+
+
+def incidencias_altas(contenido, decisiones):
+    """Simula solo las identidades seleccionadas, sin escribir fichas ni resultados."""
+    cambios = {d['participante']: d['campos'] for d in decisiones}
+    personas = []
+    afectadas = set()
+    for p in contenido['participantes']:
+        campos = cambios.get(p['id_participante_importado'])
+        if campos is not None:
+            afectadas.add(p['id_fila'])
+            p = {**p, 'dni_deportista_confirmado': 'ALTA-' + str(p['id_participante_importado']),
+                 'estado': 'nuevo_confirmado', 'rol_propuesto': (
+                     'Patron' if contenido['importacion']['numero_tripulantes'] == 1
+                     else campos.get('rol_propuesto'))}
+        personas.append(p)
+    previsto = {**contenido, 'participantes': personas}
+    salida = {}
+    for fila in contenido['filas']:
+        if fila['id_fila'] not in afectadas:
+            continue
+        errores = resultados.incidencias(previsto, fila)
+        pendientes = [p['nombre_original'] for p in resultados.miembros_fila(previsto, fila)
+                      if not p['dni_deportista_confirmado']]
+        if pendientes:
+            errores = ['Falta revisar o seleccionar a: ' + ', '.join(pendientes)] + errores
+        if errores:
+            salida[fila['id_fila']] = f"Puesto {fila['posicion_general']}: " + ' '.join(errores)
+    return salida
+
+
+def similitudes_altas(contenido, decisiones):
+    """Coincidencias entre personas seleccionadas, todavía fuera del catálogo."""
+    personas = {p['id_participante_importado']:p for p in contenido['participantes']}
+    previas, salida = [], []
+    for d in decisiones:
+        campos = d['campos']
+        p = personas[d['participante']]
+        propuesta = {**p, 'nombre_propuesto':campos.get('nombre'),
+                     'apellidos_propuestos':campos.get('apellidos')}
+        for c in revision._candidatos(None, propuesta, fichas=previas, aliases=[]):
+            salida.append({'Participante': (campos.get('nombre') or '') + ' ' + (campos.get('apellidos') or ''),
+                           'Otra alta del lote':c['nombre'] + ' ' + c['apellidos']})
+        previas.append(dict(campos,dni='ALTA-'+str(d['participante']),club=None,
+                            federacion=None,id_federacion=None))
     return salida
 
 
@@ -185,20 +232,22 @@ def confirmar_vinculos(engine, identificador, decisiones, version, *, confirmar=
                     raise ConflictoError('Un participante está repetido o ya no está pendiente.')
                 vistos.add(ident)
                 r, dni = propuestas[ident], d['dni']
+                p = r['participante']
+                contexto = f"Puesto {p['fila']['posicion_general']} · {p['nombre_original']}: "
                 ficha = r['propuesta']
                 if not ficha or dni != ficha['dni'] or d['version_ficha'] != ficha['version_ficha']:
-                    raise ConflictoError('La ficha propuesta cambió o necesita revisión individual. Actualiza las propuestas.')
+                    raise ConflictoError(contexto + 'La ficha propuesta cambió o necesita revisión individual. Actualiza las propuestas.')
                 if dni in documentos or dni in confirmados:
-                    raise ConflictoError('La misma ficha aparece en varias posiciones de esta clasificación. Revisa las identidades individualmente.')
+                    raise ConflictoError(contexto + 'La misma ficha aparece en varias posiciones de esta clasificación. Revisa las identidades individualmente.')
                 documentos.add(dni)
                 rol = 'Patron' if contenido['importacion']['numero_tripulantes'] == 1 else d['rol']
                 if rol not in ('Patron', 'Tripulante'):
-                    raise ValidacionError('Confirma el rol de cada miembro de la clase doble.')
+                    raise ValidacionError(contexto + 'Confirma su rol: patrón o tripulante.')
                 p = r['participante']
                 if p['id_club_identificado'] is not None and p['id_club_identificado'] not in clubes_validos:
-                    raise ValidacionError('El club seleccionado ya no existe.')
+                    raise ValidacionError(contexto + 'El club seleccionado ya no existe.')
                 if ficha['fecha_nacimiento'] and fecha_regata and ficha['fecha_nacimiento'] > fecha_regata:
-                    raise ValidacionError('La ficha nació después de la regata. Revisa la identidad.')
+                    raise ValidacionError(contexto + 'La ficha nació el ' + resultados._fecha_aviso(ficha['fecha_nacimiento']) + ', después del inicio de la regata (' + resultados._fecha_aviso(fecha_regata) + '). Revisa la identidad o las fechas.')
                 campos = dict(dni=p['documento_propuesto'], nombre=p['nombre_propuesto'],
                     apellidos=p['apellidos_propuestos'], fecha_nacimiento=p['fecha_nacimiento_propuesta'],
                     sexo=p['sexo_propuesto'], id_club=p['id_club_identificado'], rol_propuesto=rol,
@@ -219,16 +268,30 @@ def confirmar_vinculos(engine, identificador, decisiones, version, *, confirmar=
                 if f['id_fila'] in afectadas and actual['importacion']['numero_tripulantes'] == 2:
                     miembros = [p for p in actual['participantes'] if p['id_fila'] == f['id_fila'] and p['dni_deportista_confirmado']]
                     if len(miembros) == 2 and sorted(p['rol_propuesto'] or '' for p in miembros) != ['Patron', 'Tripulante']:
-                        raise ValidacionError('Una tripulación completa necesita un patrón y un tripulante. No se guardó el lote.')
+                        raise ValidacionError(resultados.contexto_fila(actual, f) + ': una tripulación completa necesita un patrón y un tripulante. No se guardó el lote.')
             datos.estados_filas_lote(c,estados)
             salida = {'vinculados': len(preparadas), 'resultados_preparados': len(resultados.filas_preparadas(actual))}
             if datos_resultado is not None:
                 afectadas = {propuestas[i]['participante']['id_fila'] for i in vistos}
                 listas = [f['id_fila'] for f in resultados.filas_preparadas(actual) if f['id_fila'] in afectadas]
-                if afectadas != set(listas):
-                    raise ValidacionError('El lote contiene equipos incompletos o resultados sin puesto o puntos. Completa esos casos antes de incorporar juntos.')
+                pendientes = []
+                for f in actual['filas']:
+                    if f['id_fila'] not in afectadas - set(listas):
+                        continue
+                    miembros = resultados.miembros_fila(actual, f)
+                    # Vincular una persona no exige inventar la identidad de su pareja.
+                    # Se conserva el vínculo; el resultado espera a completar el equipo.
+                    if (len(miembros) == actual['importacion']['numero_tripulantes']
+                            and any(not p['dni_deportista_confirmado'] for p in miembros)
+                            and f['posicion_general'] is not None and f['puntos'] is not None):
+                        pendientes.append(f['id_fila'])
+                    else:
+                        raise ValidacionError(f"Puesto {f['posicion_general']}: " +
+                            ' '.join(resultados.incidencias(actual, f)) + ' No se guardó el lote.')
                 salida['resultados_incorporados'] = resultados.incorporar_en_conexion(
-                    c, identificador, listas, datos_resultado, resultados.version_resultados(actual))
+                    c, identificador, listas, datos_resultado, resultados.version_resultados(actual)) if listas else 0
+                if pendientes:
+                    salida['equipos_pendientes'] = len(pendientes)
             return salida
     except IntegrityError:
         raise ConflictoError('No se guardó ninguna vinculación del lote: hay identidades o referencias incompatibles. Actualiza y revisa los datos.') from None
@@ -267,9 +330,18 @@ def crear_nuevos(engine, identificador, decisiones, version, datos_resultado, *,
             fichas, aliases = datos.fichas_revision(c), datos.aliases_revision(c)
             clubes = {cl['id_club']:cl for cl in datos.clubes_revision(c)}
             pendientes = {p['id_participante_importado']: p for p in _pendientes(contenido)}
+            # Validar la forma antes de simular, sin confiar en datos de la interfaz.
+            for d in decisiones:
+                if not isinstance(d, dict) or not {'participante', 'version', 'campos'} <= set(d) or set(d) - {'participante', 'version', 'campos', 'confirmar_distinto_lote'} or not isinstance(d['campos'], dict):
+                    raise ValidacionError('Una alta del lote contiene datos no admitidos.')
+                base._entero(d['participante'], 'id_participante_importado')
+            faltas = incidencias_altas(contenido, decisiones)
+            if faltas:
+                raise ValidacionError('No se guardó ninguna alta. ' + ' | '.join(faltas.values()))
+            fichas_iniciales = list(fichas)
             vistos, afectadas = set(), set()
             for d in decisiones:
-                if not isinstance(d, dict) or set(d) != {'participante', 'version', 'campos'}:
+                if not isinstance(d, dict) or not {'participante', 'version', 'campos'} <= set(d) or set(d) - {'participante', 'version', 'campos', 'confirmar_distinto_lote'}:
                     raise ValidacionError('Una alta del lote contiene datos no admitidos.')
                 ident = base._entero(d['participante'], 'id_participante_importado')
                 if ident in vistos or ident not in pendientes:
@@ -279,15 +351,32 @@ def crear_nuevos(engine, identificador, decisiones, version, datos_resultado, *,
                 campos = d['campos']
                 if not isinstance(campos, dict) or set(campos) - (revision._CAMPOS - {'dni'}):
                     raise ValidacionError('Revisa los campos de la nueva ficha.')
-                revision._validar_campos({**campos, 'dni': 'TEMP-VALIDACION'}, completo=True)
+                contexto = f"Puesto {p['fila']['posicion_general']} · {p['nombre_original']}: "
+                try:
+                    revision._validar_campos({**campos, 'dni': 'TEMP-VALIDACION'}, completo=True)
+                except ValidacionError as error:
+                    raise ValidacionError(contexto + str(error) + ' No se creó ninguna ficha del lote.') from None
                 if not campos.get('id_club') or campos['id_club'] != p['id_club_identificado']:
-                    raise ValidacionError('Confirma primero el club del participante para crear altas por lotes.')
+                    raise ValidacionError(contexto + 'Confirma primero el club del participante para crear altas por lotes.')
                 # Se vuelven a buscar coincidencias después de cada alta: impide
                 # duplicar también dos personas del mismo lote con distinto ID.
                 propuesta = {**p, 'nombre_propuesto': campos.get('nombre'), 'apellidos_propuestos': campos.get('apellidos')}
-                if revision._candidatos(c, propuesta,fichas=fichas,aliases=aliases):
-                    raise ConflictoError('Una alta tiene fichas similares. Revisa esa persona individualmente; no se creó ninguna ficha del lote.')
-                dni = revision.guardar_revision_en_conexion(c, ident, 'crear', {**campos, 'dni': None}, d['version'],fichas=fichas,aliases=aliases)
+                existentes = revision._candidatos(c, propuesta, fichas=fichas_iniciales, aliases=aliases)
+                if existentes:
+                    nombres = ', '.join(f['nombre']+' '+f['apellidos'] for f in existentes)
+                    raise ConflictoError(f"{campos['nombre']} {campos['apellidos']}: hay fichas existentes similares ({nombres}). Revisa esa persona individualmente; no se creó ninguna ficha del lote.")
+                similares_lote = revision._candidatos(c, propuesta, fichas=fichas[len(fichas_iniciales):], aliases=aliases)
+                distinto = d.get('confirmar_distinto_lote', False)
+                if type(distinto) is not bool:
+                    raise ValidacionError('Confirma explícitamente si las altas similares son personas distintas.')
+                completo = revision.normalizar(campos['nombre']+' '+campos['apellidos'])
+                if any(revision.normalizar(f['nombre']+' '+f['apellidos']) == completo for f in similares_lote):
+                    raise ConflictoError(f"{campos['nombre']} {campos['apellidos']}: el mismo nombre aparece en varias altas del lote. Revisa esa identidad individualmente; no se creó ninguna ficha.")
+                if similares_lote and distinto is not True:
+                    nombres = ', '.join(f['nombre']+' '+f['apellidos'] for f in similares_lote)
+                    raise ConflictoError(f"{campos['nombre']} {campos['apellidos']} se parece a otra alta de este lote ({nombres}). Confirma que son personas distintas; no se creó ninguna ficha del lote.")
+                dni = revision.guardar_revision_en_conexion(c, ident, 'crear', {**campos, 'dni': None}, d['version'],
+                    confirmar_nuevo_distinto=distinto, fichas=fichas,aliases=aliases)
                 club = clubes[campos['id_club']]
                 fichas.append(dict(campos,dni=dni,club=club['nombre'],id_federacion=club['id_federacion'],federacion=club['federacion']))
                 afectadas.add(p['id_fila'])

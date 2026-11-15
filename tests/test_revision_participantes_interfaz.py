@@ -330,3 +330,22 @@ class PantallaRevision(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
+
+
+class EtapaHistoricaInterfaz(unittest.TestCase):
+    def test_cierre_manual_opcional_no_se_rellena_automaticamente(self):
+        guion = """
+import streamlit as st
+from datetime import date
+from app.revision_participantes import _campos_regata
+campos=_campos_regata(dict(numero_tripulantes=2,tipo_clasificacion='definitiva',
+    fecha_inicio_propuesta=date(2026,3,30),fecha_fin_propuesta=date(2026,4,4)),'prueba_')
+st.session_state['campos_prueba']=campos
+"""
+        at=AppTest.from_string(guion).run()
+        self.assertNotIn('fecha_fin_etapa_historica',at.session_state['campos_prueba'])
+        next(c for c in at.checkbox if c.label=='Registrar una etapa histórica con otra pareja o roles').check().run()
+        self.assertIsNone(at.session_state['campos_prueba']['fecha_fin_etapa_historica'])
+        next(d for d in at.date_input if d.label=='Finalización manual de la etapa histórica').set_value(date(2026,4,4)).run()
+        self.assertEqual(at.session_state['campos_prueba']['fecha_fin_etapa_historica'],date(2026,4,4))
+        self.assertEqual(len(at.exception),0)

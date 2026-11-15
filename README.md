@@ -195,8 +195,9 @@ La pagina **Importar clasificaciones** permite:
    elección manual, que debe confirmarse junto con la revisión de las columnas.
 5. Revisar las celdas y escribir cada tripulante por separado. Para individuales
    puede elegirse explicitamente primera linea como nombre y siguientes como club.
-   Los equipos dobles se transcriben manualmente cuando la fuente mezcla nombres
-   y clubes. No se deducen DNI ni fechas de nacimiento a partir de categorias.
+   En clases dobles puede elegirse **Dobles · Escora** o **Dobles · Sailti** para
+   proponer los dos miembros y sus clubes. La distribución ambigua se revisa
+   manualmente. No se deducen DNI ni fechas de nacimiento a partir de categorias.
 6. Comprobar seleccionados, excluidos e incidencias. Se conservan todas las filas,
    sus celdas originales y las posiciones con empates. Los datos incompletos se
    guardan pendientes de correccion, sin crear resultados definitivos.
@@ -219,6 +220,35 @@ mismo documento deben separarse en archivos antes de subirlos. Los nombres con
 texto superpuesto o mal codificado requieren comparacion y transcripcion manual.
 Para una regata publicada mediante enlace, descargar su PDF y subirlo; todavia
 no se descargan documentos automaticamente desde una URL.
+
+### Tripulaciones de 420 y 470: Escora y Sailti
+
+Con una clase de dos tripulantes seleccionada, **Tratamiento de los nombres**
+ofrece dos modos adicionales:
+
+- **Dobles · Escora**: lee los dos nombres y sus clubes al final de la celda.
+  Une las continuaciones del segundo nombre y las señala para revisión. Si solo
+  aparece un club, conserva ambos nombres pero deja los dos clubes pendientes:
+  no presupone que pertenezcan al mismo club ni a cuál corresponde el dato.
+- **Dobles · Sailti**: separa los bloques `APELLIDOS, nombre / club`, manteniendo
+  la separación de nombre y apellidos. Ignora el patrocinador tras un segundo
+  `/`. Usa el orden de los caracteres del flujo PDF para no mezclar líneas
+  superpuestas de un nombre y la continuación del club anterior. Si no hay dos
+  bloques reconocibles, conserva el texto original y exige revisión manual.
+
+Los roles comienzan sin confirmar. Se pueden elegir en las columnas **Rol 1**
+y **Rol 2**, o confirmar expresamente que el primer nombre es patrón y el segundo
+tripulante en todo el documento. Esa confirmación precarga los roles, que siguen
+siendo editables. Cambiarla exige revisar otra vez antes de guardar el borrador.
+Los roles no se deducen del sexo, categoría mixta ni orden por defecto.
+
+En Sailti se sigue proponiendo **NET**, manteniendo **TOTAL** como elección
+manual alternativa. Para nivel internacional se seleccionan los equipos cuyo
+número de vela contiene ESP, incluyendo a ambos miembros y conservando el
+puesto general del PDF. La revisión posterior conserva el flujo por lotes:
+si un equipo mezcla una ficha existente y una alta nueva, primero se vincula la
+existente sin incorporar aún el resultado y después se completa el equipo con
+la nueva ficha. Solo se incorpora cuando estén confirmados ambos miembros y roles.
 
 `services/documentos_importacion.py` conserva las fuentes locales en
 `.local/importaciones/<sha256>.pdf`, excluidas de Git, con permisos privados y

@@ -131,6 +131,105 @@ class Extraccion(unittest.TestCase):
                 e.renderizar_pagina(self.pdf, pagina)
 
 
+class Dobles(unittest.TestCase):
+    def fuente(self,texto,bloques=None):
+        columnas=[dict(id='c0',nombre='Pos'),dict(id='c1',nombre='Barco'),dict(id='c2',nombre='Tripulación'),dict(id='c3',nombre='Puntos')]
+        fila=dict(numero_fila=1,pagina_origen=1,celdas=dict(c0='8',c1='ESP 12',c2=texto,c3='57'))
+        if bloques is not None:
+            columnas[2]['nombre']='Crew / Club';fila['bloques_sailti']=bloques
+        return dict(columnas=columnas,filas=[fila])
+
+    def mapear(self,fuente,modo):
+        return e.mapear_filas(fuente,dict(posicion_general='c0',numero_vela_original='c1',participantes='c2',puntos='c3'),modo)[0]
+
+    def test_escora_clubes_distintos_sin_asignar_roles(self):
+        texto='Ana Lago\nLuis Pérez\nR.C.N.Vigo\nC.M.Canido'
+        f=self.mapear(self.fuente(texto),'dobles_escora')
+        self.assertEqual([p['club_original'] for p in f['participantes']],['R.C.N.Vigo','C.M.Canido'])
+        self.assertTrue(all('rol_propuesto' not in p for p in f['participantes']))
+        self.assertEqual(f['datos_originales']['celdas']['c2'],texto)
+
+    def test_escora_continuacion_del_segundo_nombre_se_advierte(self):
+        f=self.mapear(self.fuente('Ana Lago\nLuis Pérez\nDe La Fuente\nR.C.N.Vigo\nR.C.N.Vigo'),'dobles_escora')
+        self.assertEqual(f['participantes'][1]['nombre_original'],'Luis Pérez De La Fuente')
+        self.assertTrue(f['datos_originales']['avisos_extraccion'])
+
+    def test_club_unico_no_se_propaga_a_dos_personas(self):
+        f=self.mapear(self.fuente('Ana Lago\nLuis Pérez\nR.C.N.Vigo'),'dobles_escora')
+        self.assertEqual(len(f['participantes']),2)
+        self.assertTrue(all(p['club_original'] is None for p in f['participantes']))
+
+    def test_estructura_ambigua_se_conserva_sin_inventar_personas(self):
+        f=self.mapear(self.fuente('Una línea ilegible'),'dobles_escora')
+        self.assertEqual(f['participantes'],[])
+        self.assertTrue(f['datos_originales']['avisos_extraccion'])
+
+    def test_sailti_nombre_club_y_patrocinador_separados(self):
+        f=self.mapear(self.fuente('TEXTO SUPERPUESTO',[
+            'LAGO PÉREZ, Ana / Club Uno / Patrocinador',
+            'RÍOS, Luis / Club Dos']),'dobles_sailti')
+        self.assertEqual(f['participantes'][0],dict(nombre_original='LAGO PÉREZ, Ana',nombre_propuesto='Ana',apellidos_propuestos='LAGO PÉREZ',club_original='Club Uno'))
+        self.assertEqual(f['participantes'][1]['club_original'],'Club Dos')
+        self.assertEqual(f['datos_originales']['celdas']['c2'],'TEXTO SUPERPUESTO')
+
+    def test_sailti_no_usa_bloques_de_otra_columna(self):
+        fuente=self.fuente('texto',['LAGO, Ana / Club','RÍOS, Luis / Club'])
+        fuente['columnas'][2]['nombre']='Otro campo'
+        with self.assertRaises(ValidacionError):self.mapear(fuente,'dobles_sailti')
+
+    def test_sailti_un_solo_nombre_exige_revision(self):
+        f=self.mapear(self.fuente('texto',['LAGO, Ana / Club']),'dobles_sailti')
+        self.assertEqual(f['participantes'],[])
+
+    def test_flujo_sailti_no_mezcla_lineas_superpuestas(self):
+        class Pagina:
+            chars=[dict(x0=10,top=y,text=t) for y,t in [
+                (10,'LAGO, Ana / Club de Gran'),(18.1,'Canaria'),
+                (18.25,'RÍOS, Luis / Club de'),(26.35,'Vela')]]
+            def dedupe_chars(self):return self
+        bloques=e._bloques_sailti(Pagina(),0,100,0,50)
+        self.assertEqual([b['texto'] for b in bloques],['LAGO, Ana / Club de Gran Canaria','RÍOS, Luis / Club de Vela'])
+
+    def flujo(self, lineas):
+        class Pagina:
+            chars=[]
+        p=Pagina()
+        for top,texto in lineas:
+            for j,letra in enumerate(texto):
+                p.chars.append(dict(x0=10+j*.3,top=top,text=letra,size=7.5))
+        return e._bloques_sailti(p,0,100,0,100)
+
+    def test_sailti_apellidos_y_nombre_partidos_en_varias_lineas(self):
+        bloques=self.flujo([(10,'CARRASCO DEL'),(18.1,'CUVILLO, Carlos / CN'),
+            (26.2,'PUERTO SHERRY'),(18.25,'FLETHES ANAYA,'),(26.35,'Nicolas / CN'),
+            (34.45,'PUERTO SHERRY')])
+        fila=self.mapear(self.fuente('superpuesto',[b['texto'] for b in bloques]),'dobles_sailti')
+        self.assertEqual([p['apellidos_propuestos'] for p in fila['participantes']],
+                         ['CARRASCO DEL CUVILLO','FLETHES ANAYA'])
+        self.assertEqual([p['nombre_propuesto'] for p in fila['participantes']],['Carlos','Nicolas'])
+        self.assertEqual([b['top'] for b in bloques],[10,18.25])
+
+    def test_sailti_hermanos_no_pierden_letras_por_deduplicacion(self):
+        bloques=self.flujo([(10,'MONTOYA PORLAND,'),(18.1,'Lucas / CND'),
+                            (18.25,'MONTOYA PORLAND,'),(26.35,'Nicolas / CND')])
+        self.assertEqual([b['texto'] for b in bloques],
+            ['MONTOYA PORLAND, Lucas / CND','MONTOYA PORLAND, Nicolas / CND'])
+
+    def test_sailti_continuaciones_no_contaminan_siguiente_persona(self):
+        bloques=self.flujo([(10,'JAUDENES, Asier / CNA'),(18.1,'/'),
+            (26.2,'PATROCINADOR'),(18.25,'BENITEZ CASARES,'),
+            (26.35,'Juan / Real Club'),(34.45,'Nautico')])
+        fila=self.mapear(self.fuente('superpuesto',[b['texto'] for b in bloques]),'dobles_sailti')
+        self.assertEqual(fila['participantes'][1]['nombre_propuesto'],'Juan')
+        self.assertEqual(fila['participantes'][1]['club_original'],'Real Club Nautico')
+
+    def test_sailti_apellido_aleman_con_eszet_no_desaparece(self):
+        bloques=self.flujo([(10,'LEßMANN, Pascal / SF'),(18.1,'Hof'),(18.25,'SEITZ, Chiara / AmSC')])
+        self.assertEqual(len(bloques),2)
+        self.assertTrue(bloques[0]['texto'].startswith('LEßMANN, Pascal'))
+
+
+
 class Almacenamiento(unittest.TestCase):
     def setUp(self):
         self.temporal = tempfile.TemporaryDirectory()

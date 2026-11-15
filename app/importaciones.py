@@ -26,11 +26,14 @@ def _marco_edicion(filas, extraccion, mapeo, tripulantes):
                 'Vela': f['numero_vela_original'] or '',
                 'Puntos': str(f['puntos']) if f['puntos'] is not None else '',
                 'Categoría': f['categoria_original'] or '',
+                'Revisión de nombres': '; '.join(f['datos_originales'].get('avisos_extraccion',[])),
                 'Texto participantes': originales[f['numero_fila']]['celdas'].get(mapeo.get('participantes'), '')}
         for i in range(1, tripulantes + 1):
             p = f['participantes'][i - 1] if len(f['participantes']) >= i else {}
             fila[f'Nombre {i}'] = p.get('nombre_original') or ''
             fila[f'Club {i}'] = p.get('club_original') or ''
+            if tripulantes==2:
+                fila[f'Rol {i}'] = {'Patron':'Patrón','Tripulante':'Tripulante'}.get(p.get('rol_propuesto'))
         salida.append(fila)
     return pd.DataFrame(salida)
 
@@ -47,7 +50,13 @@ def _filas_editadas(marco, originales, tripulantes):
             nombre = _celda(editada[f'Nombre {i}'])
             club = _celda(editada[f'Club {i}'])
             if nombre:
-                miembros.append({'nombre_original': nombre, 'club_original': club or None})
+                previo = base['participantes'][i-1] if len(base['participantes'])>=i else {}
+                p = {**previo,'nombre_original':nombre,'club_original':club or None}
+                if previo.get('nombre_original')!=nombre:
+                    p.pop('nombre_propuesto',None);p.pop('apellidos_propuestos',None)
+                if tripulantes==2:
+                    p['rol_propuesto'] = {'Patrón':'Patron','Tripulante':'Tripulante'}.get(_celda(editada.get(f'Rol {i}')))
+                miembros.append(p)
             elif club:
                 raise servicio.ValidacionError(f'Fila {base["numero_fila"]}: falta el nombre del miembro {i}.')
         resultado.append({**base,
@@ -156,10 +165,12 @@ def mostrar(proveedor, motor, lectura):
     if tripulantes > 10:
         st.error('La vista previa admite hasta diez miembros por embarcación.')
         return
-    opciones_nombres = ['manual'] + (['nombre_club'] if tripulantes == 1 else [])
+    opciones_nombres = ['manual'] + (['nombre_club'] if tripulantes == 1 else ['dobles_escora','dobles_sailti'] if tripulantes==2 else [])
     modo = st.selectbox('Tratamiento de los nombres', opciones_nombres,
                         format_func=lambda v: {'manual': 'Revisar y escribir cada miembro en la tabla',
-                                               'nombre_club': 'Individual: primera línea = nombre; siguientes líneas = club'}[v],
+                                               'nombre_club': 'Individual: primera línea = nombre; siguientes líneas = club',
+                                               'dobles_escora': 'Dobles · Escora: dos nombres y clubes al final',
+                                               'dobles_sailti': 'Dobles · Sailti: apellido, nombre / club por miembro'}[v],
                         key=f'importacion_nombres_{tripulantes}', disabled=bloqueada)
     if nivel is None:
         st.info('Selecciona el nivel para aplicar el criterio de incorporación.')
@@ -172,11 +183,23 @@ def mostrar(proveedor, motor, lectura):
     except servicio.ValidacionError as error:
         st.error(str(error))
         return
+    patron_primero = False
+    if tripulantes==2:
+        st.caption('Los roles no se deducen del sexo ni del orden de los nombres. Puedes asignarlos en la tabla o confirmar el orden de todo el documento.')
+        patron_primero = st.checkbox('Confirmo que el primer nombre es el patrón y el segundo el tripulante en esta clasificación.',
+                                     key='importacion_orden_roles',disabled=bloqueada)
+        if patron_primero:
+            for fila in filas:
+                if len(fila['participantes'])==2:
+                    for p,rol in zip(fila['participantes'],('Patron','Tripulante')):p['rol_propuesto']=rol
     st.subheader('Revisión de filas y participantes')
     st.caption('Escribe cada miembro en su propia columna. Los nombres originales permanecen en Texto participantes. Las filas incompletas se conservarán pendientes de corrección.')
-    version = hashlib.sha256(json.dumps([mapeo, modo, tripulantes], sort_keys=True).encode()).hexdigest()[:12]
+    version = hashlib.sha256(json.dumps([mapeo, modo, tripulantes,patron_primero], sort_keys=True).encode()).hexdigest()[:12]
+    avisos = sum(bool(f['datos_originales'].get('avisos_extraccion')) for f in filas)
+    if avisos:st.warning(f'{avisos} filas necesitan revisar la separación de nombres o los clubes. Consulta Revisión de nombres y la página original.')
     marco = st.data_editor(_marco_edicion(filas, resultado, mapeo, tripulantes),
-                           disabled=True if bloqueada else ['Fila', 'Página', 'Texto participantes'], num_rows='fixed',
+                           disabled=True if bloqueada else ['Fila', 'Página', 'Texto participantes','Revisión de nombres'], num_rows='fixed',
+                           column_config={f'Rol {i}':st.column_config.SelectboxColumn(f'Rol {i}',options=['Patrón','Tripulante']) for i in (1,2)} if tripulantes==2 else {},
                            hide_index=True, width='stretch', key=f'importacion_editor_{huella}_{version}')
     try:
         editadas = _filas_editadas(marco, filas, tripulantes)
