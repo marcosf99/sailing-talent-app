@@ -27,6 +27,14 @@ class ResultadosImportados(unittest.TestCase):
     def contenido(self, ident=None):
         return base.obtener_borrador(self.engine, ident or self.ident)
 
+    def test_borrador_antiguo_no_incorpora_resultado_extranjero(self):
+        self.confirmar()
+        with self.engine.begin() as c:
+            c.execute(text("UPDATE fila_clasificacion_importada SET numero_vela_original='BRA 123',cumple_criterio=TRUE WHERE id_importacion=:id"),{'id':self.ident})
+        with self.assertRaisesRegex(ValidacionError, 'ESP'):
+            self.aplicar()
+        self.assertEqual(self.db.contar('participa_en'), 0)
+
     def confirmar(self, indice=0, dni='D1', ident=None, rol=None):
         p = self.contenido(ident)['participantes'][indice]
         revision.guardar_revision(self.engine, p['id_participante_importado'], 'vincular',
@@ -271,12 +279,34 @@ class ResultadosImportados(unittest.TestCase):
         for dni in ('D3', 'D2'):
             self.assertEqual(len(queries.consultar_resultados_deportista(self.engine, dni)), 1)
 
-    def test_vinculo_existente_conserva_proceso_manual(self):
+    def test_vinculo_existente_incorpora_resultado_sin_alta_nueva(self):
         resultado = self.alta_con_resultado(dni='D1', accion='vincular')
-        self.assertFalse(resultado['resultado_incorporado'])
+        self.assertTrue(resultado['resultado_incorporado'])
         self.assertFalse(resultado['pendiente_equipo'])
-        self.assertEqual(self.contar('participa_en'), 0)
-        self.assertEqual(len(s.filas_preparadas(self.contenido())), 1)
+        self.assertEqual(self.contar('participa_en'), 1)
+        self.assertEqual(self.contar('deportista'),2)
+        self.assertEqual(len(queries.consultar_resultados_deportista(self.engine,'D1')),1)
+
+    def test_doble_de_existentes_incorpora_al_vincular_ultimo_miembro(self):
+        ident=self.db.crear(campos={**self.db.campos,'id_clase':2},filas=[{
+            **self.db.filas[0],'participantes':[{'nombre_original':'Ana Pérez'},{'nombre_original':'Luis Lago'}]}])
+        primero=self.alta_con_resultado(ident=ident,dni='D1',rol='Patron',accion='vincular')
+        self.assertTrue(primero['pendiente_equipo'])
+        self.assertEqual(self.contar('participa_en'),0)
+        segundo=self.alta_con_resultado(1,ident,'D2','Tripulante',accion='vincular')
+        self.assertTrue(segundo['resultado_incorporado'])
+        self.assertEqual(self.contar('deportista'),2)
+        self.assertEqual(self.contar('participa_en'),1)
+        for dni in ('D1','D2'):
+            self.assertEqual(len(queries.consultar_resultados_deportista(self.engine,dni)),1)
+
+    def test_resultado_fallido_revierte_vinculo_individual(self):
+        with self.engine.begin() as c:
+            c.exec_driver_sql("CREATE TRIGGER fallo BEFORE INSERT ON participa_en BEGIN SELECT RAISE(ABORT,'fallo'); END")
+        with self.assertRaises(ConflictoError):
+            self.alta_con_resultado(dni='D1',accion='vincular')
+        self.assertIsNone(self.contenido()['participantes'][0]['dni_deportista_confirmado'])
+        self.assertEqual(self.contar('participa_en'),0)
 
     def test_metadatos_invalidos_o_revision_obsoleta_no_crean_ficha(self):
         with self.assertRaises(ValidacionError):

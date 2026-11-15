@@ -68,7 +68,7 @@ class PantallaRevision(unittest.TestCase):
         revisables = [{**p, 'fila': seleccionadas[p['id_fila']], 'version': s.version_participante(p)}
                       for p in self.personas if p['id_fila'] in seleccionadas]
         return copy.deepcopy(dict(importacion={'id_importacion': 1, 'nombre_clase': 'Optimist',
-                                               'estado': 'en_revision', 'numero_tripulantes': 1,
+                                               'estado': 'en_revision', 'numero_tripulantes': 1, 'nivel': 'Nacional',
                                                'nombre_competicion_propuesto': 'Regata',
                                                'fecha_inicio_propuesta': date(2026, 10, 3),
                                                'fecha_fin_propuesta': date(2026, 10, 4),
@@ -125,15 +125,18 @@ class PantallaRevision(unittest.TestCase):
 
     def test_vinculo_exige_eleccion_y_confirmacion(self):
         self.at.run()
-        self.assertTrue(self.boton('Vincular ficha seleccionada').disabled)
+        self.assertFalse(any(s.label in ('Federación para localizar el club de la fuente', 'Club identificado en la clasificación') for s in self.at.selectbox))
+        self.assertTrue(self.boton('Vincular ficha y guardar resultado').disabled)
         next(s for s in self.at.selectbox if s.label.startswith('Ficha existente')).set_value('D1')
         next(c for c in self.at.checkbox if c.label.startswith('Confirmo que la ficha')).check().run()
-        self.boton('Vincular ficha seleccionada').click().run()
+        self.boton('Vincular ficha y guardar resultado').click().run()
         self.assertEqual(len(self.at.exception), 0)
-        self.assertTrue(any('Ficha existente vinculada' in x.value for x in self.at.success))
+        self.assertTrue(any('Ficha vinculada y resultado del equipo incorporado' in x.value for x in self.at.success))
         self.assertEqual(self.mocks[3].call_args.args[0], 'supabase')
         self.assertEqual(self.mocks[3].call_args.args[5], 'D1')
-        self.assertEqual(self.mocks[3].call_args.kwargs, {})
+        self.assertEqual(self.mocks[3].call_args.kwargs['datos_resultado']['nombre'], 'Regata')
+        self.assertIn('version_importacion',self.mocks[3].call_args.kwargs)
+        self.assertIsNone(self.mocks[3].call_args.args[3]['id_club'])
         self.at.run()
         self.mocks[3].assert_called_once()
 
@@ -141,13 +144,29 @@ class PantallaRevision(unittest.TestCase):
         self.at.run()
         recordar=next(c for c in self.at.checkbox if c.label=='Recordar este nombre como variante de la ficha confirmada')
         self.assertFalse(recordar.value)
+        self.assertTrue(recordar.disabled)
+        self.personas[0]['id_club_identificado']=1
+        self.at.run()
         next(s for s in self.at.selectbox if s.label.startswith('Ficha existente')).set_value('D1').run()
-        next(s for s in self.at.selectbox if s.label=='Club identificado en la clasificación').set_value(1).run()
         next(c for c in self.at.checkbox if c.label=='Recordar este nombre como variante de la ficha confirmada').check().run()
         next(c for c in self.at.checkbox if c.label.startswith('Confirmo que la ficha')).check().run()
-        self.boton('Vincular ficha seleccionada').click().run()
+        self.boton('Vincular ficha y guardar resultado').click().run()
         self.assertTrue(self.mocks[3].call_args.args[3]['recordar_nombre'])
+        self.assertEqual(self.mocks[3].call_args.args[3]['id_club'],1)
         self.assertEqual(len(self.at.exception),0)
+
+    def test_vinculo_conserva_club_fuente_al_cambiar_de_decision(self):
+        self.personas[0]['id_club_identificado']=1
+        self.at.run();self.decision('Crear deportista')
+        next(s for s in self.at.selectbox if s.label.startswith('Federación para')).set_value(2).run()
+        next(s for s in self.at.selectbox if s.label=='Club identificado en la clasificación').set_value(2).run()
+        self.decision('Vincular ficha existente')
+        self.assertFalse(any(s.label=='Club identificado en la clasificación' for s in self.at.selectbox))
+        next(s for s in self.at.selectbox if s.label.startswith('Ficha existente')).set_value('D1')
+        next(c for c in self.at.checkbox if c.label.startswith('Confirmo que la ficha')).check().run()
+        self.boton('Vincular ficha y guardar resultado').click().run()
+        self.assertEqual(len(self.at.exception),0)
+        self.assertEqual(self.mocks[3].call_args.args[3]['id_club'],1)
 
     def test_decisiones_recordadas_pueden_olvidarse_con_confirmacion(self):
         from services import memoria_nombres

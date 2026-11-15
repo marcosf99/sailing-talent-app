@@ -38,6 +38,14 @@ class RevisionParticipantes(unittest.TestCase):
         self.assertEqual(self.db.contar('coincidencia_propuesta'), 0)
         self.assertIsNone(self.persona()['dni_deportista_confirmado'])
 
+    def test_borrador_antiguo_no_permite_crear_extranjero_seleccionado(self):
+        p = self.persona()
+        with self.engine.begin() as c:
+            c.execute(text("UPDATE fila_clasificacion_importada SET numero_vela_original='POR 123',cumple_criterio=TRUE WHERE id_fila=:id"),{'id':p['id_fila']})
+        with self.assertRaisesRegex(ValidacionError, 'ESP'):
+            self.guardar('crear')
+        self.assertEqual(self.db.contar('deportista'), 2)
+
     def test_busqueda_manual_por_documento_y_nombre(self):
         p = self.persona()
         self.assertEqual(s.buscar_coincidencias(self.engine, p['id_participante_importado'], 'd2')[0]['dni'], 'D2')
