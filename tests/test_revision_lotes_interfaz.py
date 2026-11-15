@@ -43,6 +43,45 @@ class TablasRevision(unittest.TestCase):
         self.ediciones={}
 
     def boton(self,etiqueta):return next(b for b in self.at.button if b.label==etiqueta)
+
+    def preparar_automaticas(self,score='.70',club=1):
+        from datetime import date
+        from decimal import Decimal
+        self.at.session_state['datos_regata_prueba']=dict(nombre='Vigo',fecha_inicio=date(2026,10,3),fecha_fin=date(2026,10,4),localidad='Vigo',tipo_clasificacion='definitiva')
+        r=self.resumen['propuestas'][0];p=r['participante']
+        p.update(nombre_original='Alba Pérez',nombre_propuesto='Alba',apellidos_propuestos='Pérez',id_club_identificado=club)
+        r.update(propuesta=None,coincidencias=1)
+        r['candidatos'][0]['indice_similitud']=Decimal(score)
+        for original in self.revision['participantes']:
+            if original['id_participante_importado']==p['id_participante_importado']:
+                original.update({k:p[k] for k in ('nombre_original','nombre_propuesto','apellidos_propuestos','id_club_identificado')})
+
+    def test_automaticas_no_escriben_al_renderizar_y_se_guardan_con_un_boton(self):
+        self.preparar_automaticas();self.at.run()
+        self.assertEqual(len(self.at.exception),0)
+        self.mocks[1].assert_not_called()
+        self.assertFalse(self.boton('Crear fichas nuevas automáticamente e incorporar resultados').disabled)
+        self.boton('Crear fichas nuevas automáticamente e incorporar resultados').click().run()
+        self.assertEqual(len(self.at.exception),0)
+        args=self.mocks[1].call_args.args
+        self.assertEqual(args[1],'altas_automaticas')
+        self.assertEqual(args[3],{'umbral':.75})
+        self.assertEqual(args[4],self.resumen['version'])
+        self.at.run();self.mocks[1].assert_called_once()
+
+    def test_subir_umbral_actualiza_plan_y_avisa_del_riesgo(self):
+        self.preparar_automaticas('.77');self.at.run()
+        self.assertTrue(self.boton('Crear fichas nuevas automáticamente e incorporar resultados').disabled)
+        next(n for n in self.at.number_input if n.label.startswith('Umbral para crear')).set_value(.80).run()
+        self.assertEqual(len(self.at.exception),0)
+        self.assertFalse(self.boton('Crear fichas nuevas automáticamente e incorporar resultados').disabled)
+        self.assertTrue(any('duplicados' in w.value for w in self.at.warning))
+        self.mocks[1].assert_not_called()
+
+    def test_automaticas_exigen_club_identificado(self):
+        self.preparar_automaticas(club=None);self.at.run()
+        self.assertTrue(self.boton('Crear fichas nuevas automáticamente e incorporar resultados').disabled)
+        self.mocks[1].assert_not_called()
     def clave(self,tabla,proveedor='supabase'):
         return f'revision_lotes_{proveedor}_1_{self.resumen["version"][:12]}_{tabla}'
     def ejecutar(self):
@@ -167,7 +206,7 @@ class TablasRevision(unittest.TestCase):
     def test_altas_similares_exigen_confirmacion_adicional_antes_del_guardado(self):
         from datetime import date
         self.at.session_state['datos_regata_prueba']=dict(nombre='Vigo',fecha_inicio=date(2026,10,3),fecha_fin=date(2026,10,4),localidad='Vigo',tipo_clasificacion='definitiva')
-        for r,nombre in zip(self.resumen['propuestas'],['Lucas','Nicolas']):
+        for r,nombre in zip(self.resumen['propuestas'],['Lucas','Luca']):
             r.update(propuesta=None,coincidencias=0)
             r['participante'].update(id_club_identificado=1,nombre_propuesto=nombre,apellidos_propuestos='Montoya Porland')
         self.at.run()

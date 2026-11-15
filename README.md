@@ -627,9 +627,72 @@ las escrituras de identidades, decisiones de coincidencia y estados de filas,
 y evita repetir el flujo individual por persona. Los resultados comparten las
 lecturas y bloqueos de deportistas y los resultados existentes de la competición.
 Las altas nuevas reutilizan el catálogo dentro de su transacción y lo amplían
-tras cada alta para seguir detectando duplicados dentro del propio lote.
+en memoria con cada decisión para detectar duplicados dentro del propio lote,
+antes de escribir. Las versiones de cada participante, los clubes, nacimientos
+y coincidencias se validan contra el borrador bloqueado y el catálogo compartido.
+Los identificadores TEMP- se reservan comprobando tanto las fichas existentes como
+las altas del lote; la clave primaria sigue protegiendo frente a colisiones concurrentes.
+Las fichas, propuestas y confirmaciones se escriben en bloques de hasta 200.
+Las coincidencias descartadas conservan su rastro de revisión.
 Se conservan los controles de versiones, roles, nacimiento, edad, puestos,
 equipos y reversión completa ante conflictos. No requiere migraciones.
+
+La incorporación de resultados carga y bloquea las unidades y sus miembros una
+vez para todo el lote. Los resultados y sus referencias en las filas importadas
+se escriben en bloques de hasta 200, con parámetros y precisión NUMERIC(10,2).
+La creación de unidades nuevas sigue necesitando recuperar sus identificadores.
+En una prueba local de 80 resultados, las consultas bajan de 333 a 17 al reutilizar
+unidades y de 413 a 176 al crearlas. Son recuentos de consultas de esta fase, no
+tiempos medidos en Supabase. `tests/test_rendimiento_importacion.py` comprueba
+los límites de consultas con 80 y 201 equipos ficticios y conserva los puntos.
+
+Para el alta completa con resultados, una prueba local de 160 deportistas en 80
+equipos dobles pasa de 2.905 a 190 consultas; con 40 altas individuales pasa de
+785 a 110. `tests/test_rendimiento_altas.py` comprueba estos presupuestos y el
+fraccionamiento de más de 200 altas. Las mediciones son con datos ficticios y no
+representan tiempos de red de Supabase ni Cloud SQL. Las decisiones opcionales
+de memoria de nombres añaden sus propias escrituras a esos recuentos.
+
+### Altas automáticas por similitud
+
+En Revisión de participantes, «Alta automática de fichas nuevas» permite crear
+las fichas y sus resultados con un solo botón. El umbral inicial es 0,75 y puede
+ajustarse entre 0,65 y 0,85. Todas las coincidencias deben tener una similitud
+estrictamente inferior al umbral: una puntuación igual queda pendiente. Esta
+puntuación es orientativa, no una probabilidad; subir el umbral aumenta el riesgo
+de duplicados. Se recomienda empezar con 0,75.
+
+Cuando falta un apellido, un nombre compatible, el mismo primer apellido y el
+mismo club confirmado elevan la puntuación al menos a 0,95 y refuerzan la propuesta
+de ficha existente. Se conserva la comprobación de candidatos ambiguos y de fecha
+de nacimiento. Si el club es distinto y la federación conocida también lo es,
+la puntuación se limita a 0,64: no bloquea el alta nueva únicamente por ese apellido
+omitido. La federación se toma del documento o del club identificado si falta en
+el PDF. La federación del club identificado tiene prioridad sobre el texto del PDF;
+si coincide el mismo club se usa su federación para comparar las identidades.
+Un DNI coincidente o una variante confirmada conservan prioridad sobre esta regla.
+
+Antes de comparar apellidos se comprueba la compatibilidad del nombre propio.
+Los nombres claramente distintos no se proponen como coincidencias, aunque
+compartan apellidos y club, ni bloquean la ficha exacta de otra persona del lote.
+Se conserva tolerancia para erratas, iniciales y partes omitidas de nombres
+compuestos. La búsqueda manual sigue permitiendo localizar otras fichas, y el
+documento coincidente o una variante de nombre confirmada mantienen prioridad.
+
+Las demás abreviaturas compatibles siguen pendientes independientemente de su
+puntuación. También quedan pendientes los casos sin
+nombre y apellidos, sin club identificado, con avisos de extracción o con equipos
+incompletos. Se comprueban las similitudes tanto con fichas existentes como entre
+las nuevas altas del mismo lote.
+
+La separación provisional del nombre utiliza las propuestas del documento, el
+formato «apellidos, nombre» o, como alternativa, la primera palabra como nombre.
+El texto original se conserva y los datos pueden corregirse en la gestión de
+deportistas. No se inventan fechas de nacimiento ni DNIs: se asigna un TEMP-.
+
+Abrir la pantalla no escribe datos. Al pulsar el botón, el servicio vuelve a
+comprobar las fichas y la versión del borrador, y guarda el lote en una transacción.
+La revisión registra el umbral y la similitud utilizados. No requiere migración.
 
 ### Catalogo ampliado de clubes nacionales
 

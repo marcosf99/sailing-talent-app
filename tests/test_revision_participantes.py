@@ -104,7 +104,7 @@ class RevisionParticipantes(unittest.TestCase):
 
     def test_coincidencias_exigen_confirmar_persona_distinta(self):
         with self.assertRaises(ValidacionError):
-            self.guardar('crear')
+            self.guardar('crear',{**self.nueva,'nombre':'Ana','apellidos':'Pérez'})
         self.assertEqual(self.db.contar('deportista'), 2)
         self.assertEqual(self.db.contar('coincidencia_propuesta'), 0)
 

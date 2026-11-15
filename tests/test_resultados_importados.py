@@ -308,6 +308,19 @@ class ResultadosImportados(unittest.TestCase):
         self.assertIsNone(self.contenido()['participantes'][0]['dni_deportista_confirmado'])
         self.assertEqual(self.contar('participa_en'),0)
 
+    def test_fallo_en_segundo_resultado_agrupado_revierte_todo_el_lote(self):
+        ident=self.db.crear(filas=[self.db.filas[0],{**self.db.filas[0],
+            'numero_fila':2,'posicion_general':2,
+            'participantes':[{'nombre_original':'Luis Lago'}]}])
+        self.confirmar(0,'D1',ident);self.confirmar(1,'D2',ident)
+        with self.engine.begin() as c:
+            c.exec_driver_sql("CREATE TRIGGER fallo BEFORE INSERT ON participa_en WHEN NEW.posicion_general=2 BEGIN SELECT RAISE(ABORT,'fallo'); END")
+        with self.assertRaises(ConflictoError):
+            self.aplicar(ident=ident)
+        self.assertEqual(self.contar('participa_en'),0)
+        self.assertEqual(self.contar('unidad_competitiva'),0)
+        self.assertTrue(all(f['estado']!='importada' for f in self.contenido(ident)['filas']))
+
     def test_metadatos_invalidos_o_revision_obsoleta_no_crean_ficha(self):
         with self.assertRaises(ValidacionError):
             self.alta_con_resultado(metadatos={**self.campos, 'fecha_inicio': None})

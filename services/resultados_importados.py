@@ -158,7 +158,25 @@ def _anticipar_unidad(conexion, unidad, roles, clase, inicio, fin):
     return unidad
 
 
-def _unidad(conexion, imp, campos, miembros, *, personas=None):
+def _catalogo_unidades(conexion, clase, dnis):
+    """Lee y bloquea una vez las unidades de todas las personas del lote."""
+    unidades = conexion.execute(text('''
+        SELECT u.id_unidad,u.fecha_inicio,u.fecha_fin FROM public.unidad_competitiva u
+        WHERE u.id_clase=:clase AND EXISTS (
+            SELECT 1 FROM public.forma_parte fp WHERE fp.id_unidad=u.id_unidad
+            AND fp.dni_deportista IN :dnis)
+        ORDER BY u.id_unidad FOR UPDATE
+    ''').bindparams(bindparam('dnis',expanding=True)).columns(fecha_inicio=Date(),fecha_fin=Date()),
+        {'clase':clase,'dnis':sorted(dnis)}).mappings().all()
+    equipos = {u['id_unidad']:{} for u in unidades}
+    if equipos:
+        for p in conexion.execute(text('SELECT id_unidad,dni_deportista,rol FROM public.forma_parte WHERE id_unidad IN :ids')
+                .bindparams(bindparam('ids',expanding=True)),{'ids':sorted(equipos)}).mappings():
+            equipos[p['id_unidad']][p['dni_deportista']] = p['rol']
+    return unidades, equipos
+
+
+def _unidad(conexion, imp, campos, miembros, *, personas=None, catalogo=None):
     roles = {p['dni_deportista_confirmado']: ('Patron' if imp['numero_tripulantes'] == 1 else p['rol_propuesto'])
              for p in miembros}
     consulta = text('''SELECT dni, fecha_nacimiento FROM public.deportista
@@ -170,19 +188,8 @@ def _unidad(conexion, imp, campos, miembros, *, personas=None):
     if any(p['fecha_nacimiento'] and p['fecha_nacimiento'] > campos['fecha_inicio'] for p in personas):
         raise ValidacionError('Un deportista nació después de la regata. Revisa las identidades y las fechas.')
     limite = validar_edad(imp['nombre_clase'], personas, campos['fecha_inicio'], campos['fecha_fin'])
-    unidades = conexion.execute(text('''
-        SELECT u.id_unidad,u.fecha_inicio,u.fecha_fin FROM public.unidad_competitiva u
-        WHERE u.id_clase=:clase AND EXISTS (
-            SELECT 1 FROM public.forma_parte fp WHERE fp.id_unidad=u.id_unidad
-            AND fp.dni_deportista IN :dnis)
-        ORDER BY u.id_unidad FOR UPDATE
-    ''').bindparams(bindparam('dnis',expanding=True)).columns(fecha_inicio=Date(),fecha_fin=Date()),
-        {'clase':imp['id_clase'],'dnis':sorted(roles)}).mappings().all()
-    equipos = {u['id_unidad']:{} for u in unidades}
-    if equipos:
-        for p in conexion.execute(text('SELECT id_unidad,dni_deportista,rol FROM public.forma_parte WHERE id_unidad IN :ids')
-                .bindparams(bindparam('ids',expanding=True)),{'ids':sorted(equipos)}).mappings():
-            equipos[p['id_unidad']][p['dni_deportista']] = p['rol']
+    unidades, equipos = catalogo if catalogo is not None else _catalogo_unidades(conexion, imp['id_clase'], roles)
+    unidades = [u for u in unidades if set(equipos[u['id_unidad']]).intersection(roles)]
     iguales = [u for u in unidades if equipos[u['id_unidad']] == roles]
     compatibles = [u for u in iguales if u['fecha_inicio']<=campos['fecha_inicio']
                    and (u['fecha_fin'] is None or u['fecha_fin']>=campos['fecha_fin'])]
@@ -272,11 +279,13 @@ def incorporar_en_conexion(conexion, identificador, filas, campos, version):
     participantes_previos = {p[0] for p in conexion.execute(text('''SELECT fp.dni_deportista
         FROM public.participa_en p JOIN public.forma_parte fp ON fp.id_unidad=p.id_unidad
         WHERE p.id_competicion=:co'''),{'co':co})}
+    catalogo = _catalogo_unidades(conexion, imp['id_clase'], documentos)
+    nuevos, confirmadas = [], []
     for f in seleccionadas:
         miembros = miembros_fila(revision, f)
         dnis = [p['dni_deportista_confirmado'] for p in miembros]
         try:
-            unidad = _unidad(conexion, imp, campos, miembros,personas=[personas[d] for d in dnis if d in personas])
+            unidad = _unidad(conexion, imp, campos, miembros,personas=[personas[d] for d in dnis if d in personas],catalogo=catalogo)
         except (ValidacionError, ConflictoError) as error:
             periodo = f"Regata: {_fecha_aviso(campos['fecha_inicio'])} a {_fecha_aviso(campos['fecha_fin'])}."
             raise type(error)(contexto_fila(revision, f) + '. ' + periodo + ' ' + str(error) + ' No se guardó ninguna parte del lote.') from None
@@ -290,14 +299,9 @@ def incorporar_en_conexion(conexion, identificador, filas, campos, version):
         else:
             if participantes_previos.intersection(dnis):
                 raise ConflictoError(contexto_fila(revision, f) + ': un deportista ya tiene un resultado con otro equipo en esta regata. Revisa sus vinculaciones; no se guardó el lote.')
-            conexion.execute(text('''INSERT INTO public.participa_en
-                (id_unidad,id_competicion,posicion_general,posicion_categoria,puntos)
-                VALUES (:unidad,:co,:posicion_general,:posicion_categoria,:puntos)
-            ''').bindparams(bindparam('puntos', type_=Numeric(10, 2))), {**f, 'unidad': unidad, 'co': co})
-        conexion.execute(text('''UPDATE public.fila_clasificacion_importada
-            SET estado='importada', id_unidad_confirmada=:unidad,
-                id_competicion_confirmada=:co, incidencias=NULL WHERE id_fila=:id
-        '''), {'unidad': unidad, 'co': co, 'id': f['id_fila']})
+            nuevos.append({**f, 'unidad': unidad, 'co': co})
+        confirmadas.append({'id': f['id_fila'], 'unidad': unidad, 'co': co})
+    datos.guardar_resultados_lote(conexion, nuevos, confirmadas)
     pendientes = conexion.execute(text('''SELECT COUNT(*) FROM public.fila_clasificacion_importada
         WHERE id_importacion=:id AND estado NOT IN ('importada','excluida')
           AND (cumple_criterio IS TRUE OR cumple_criterio IS NULL)'''), {'id': identificador}).scalar_one()

@@ -30,6 +30,57 @@ def normalizar(valor):
     return ' '.join(re.sub(r'[\W_]+', ' ', texto.casefold()).split())
 
 
+def nombre_inicial(participante):
+    """Respeta propuestas editadas; separa provisionalmente el nombre de la fuente."""
+    if any(participante.get(c) is not None for c in ('nombre_propuesto','apellidos_propuestos')):
+        return participante.get('nombre_propuesto') or '', participante.get('apellidos_propuestos') or ''
+    original=' '.join((participante.get('nombre_original') or '').split())
+    if ',' in original:
+        apellidos,nombre=original.split(',',1)
+        return nombre.strip(),apellidos.strip()
+    partes=original.split(' ',1)
+    return partes[0],partes[1] if len(partes)>1 else ''
+
+
+def nombre_compatible_abreviado(origen, completo):
+    """Mismo nombre inicial y todos los términos de la versión corta presentes."""
+    ignorar={'de','del','la','las','los','y'}
+    a=[t for t in memoria.clave(origen).split() if t not in ignorar]
+    b=[t for t in memoria.clave(completo).split() if t not in ignorar]
+    return (min(len(a),len(b))>=2 and a[0]==b[0] and len(a)!=len(b)
+            and (set(a)<set(b) or set(b)<set(a)))
+
+
+def apellido_omitido(participante, ficha):
+    """Nombre compatible y apellidos en prefijo; no confundir dos apellidos distintos."""
+    nombre, apellidos = nombre_inicial(participante)
+    def palabras(valor):
+        return [p for p in normalizar(valor).split() if p not in ('de','del','la','las','los','y')]
+    na, nb = palabras(nombre), palabras(ficha['nombre'])
+    aa, ab = palabras(apellidos), palabras(ficha['apellidos'])
+    return bool(na and nb and aa and ab and
+                na[:min(len(na),len(nb))] == nb[:min(len(na),len(nb))] and
+                len(aa) != len(ab) and aa[:min(len(aa),len(ab))] == ab[:min(len(aa),len(ab))])
+
+
+def nombres_propios_compatibles(nombre, otro):
+    """No dejar que los apellidos oculten nombres distintos; tolerar erratas e iniciales."""
+    ignorar = {'de', 'del', 'la', 'las', 'los', 'y'}
+    a = [t for t in normalizar(nombre).split() if t not in ignorar]
+    b = [t for t in normalizar(otro).split() if t not in ignorar]
+    if not a or not b:
+        return True  # Sin nombre no hay evidencia suficiente para descartar.
+    if len(a) > len(b):
+        a, b = b, a
+    def compatible(x, y):
+        if len(x) == 1 or len(y) == 1:
+            return x[0] == y[0]
+        return SequenceMatcher(None, x, y).ratio() >= .8
+    # Se admite omitir partes de un nombre compuesto, no sustituirlas por otras.
+    return any(all(compatible(x, y) for x, y in zip(a, b[i:i+len(a)]))
+               for i in range(len(b)-len(a)+1))
+
+
 def version_participante(participante):
     """Compara también los campos pendientes; evita sobrescribir otra revisión."""
     valores = [None if participante.get(c) is None else str(participante[c]) for c in _VERSION]
@@ -80,25 +131,34 @@ def _candidatos(conexion, participante, consulta='', limite=10, *, fichas=None, 
     aliases = {a['id_club'] for a in (datos.aliases_revision(conexion) if aliases is None else aliases)
                if a['texto_normalizado'] == normalizar(nombre_club)}
     consulta_normal = normalizar(consulta)
+    nombre_original = participante['nombre_original']
+    clave_original = memoria.clave(nombre_original)
+    nombre_propio, _ = nombre_inicial(participante)
     salida = []
     for ficha in (datos.fichas_revision(conexion) if fichas is None else fichas):
         completo = ficha['nombre'] + ' ' + ficha['apellidos']
-        nombre = max(_similitud_nombre(origen, completo), _similitud_nombre(participante['nombre_original'], completo))
+        nombre = _similitud_nombre(origen, completo)
+        if origen != nombre_original:
+            nombre = max(nombre, _similitud_nombre(nombre_original, completo))
         nombre_texto = nombre
+        abreviado=nombre_compatible_abreviado(origen,completo)
         mismo_documento = bool(documento and ficha['dni'].upper() == documento)
         decisiones = [m for m in ficha.get('memoria_nombres', [])
-                      if m['id_club'] == id_club and m['nombre_normalizado'] == memoria.clave(participante['nombre_original'])]
+                      if m['id_club'] == id_club and m['nombre_normalizado'] == clave_original]
         descartada = any(m['tipo']=='descarte' for m in decisiones)
         variante = any(m['tipo']=='variante' for m in decisiones) and not descartada
         if variante:
             nombre = 1.0
         if descartada and not consulta and not mismo_documento:
             continue
+        if (not consulta and not mismo_documento and not variante and
+                not nombres_propios_compatibles(nombre_propio, ficha['nombre'])):
+            continue  # Apellidos y club compartidos no compensan un nombre distinto.
         if consulta:
             buscable = normalizar(completo + ' ' + ficha['dni'] + ' ' + ' '.join(m['nombre_normalizado'] for m in ficha.get('memoria_nombres',[]) if m['tipo']=='variante'))
             if not all(t in buscable for t in consulta_normal.split()):
                 continue
-        elif nombre < .6 and not mismo_documento:
+        elif nombre < .6 and not mismo_documento and not abreviado:
             continue
         motivos = []
         if variante:
@@ -124,14 +184,30 @@ def _candidatos(conexion, participante, consulta='', limite=10, *, fichas=None, 
                 motivos.append('El texto del club es similar')
             else:
                 club = 0.0
-        federacion = normalizar(participante.get('federacion_original'))
+        federacion = normalizar(participante.get('federacion_club_identificado') or
+                                (ficha['federacion'] if club == 1.0 else None) or
+                                participante.get('federacion_original'))
         misma_fed = bool(federacion and federacion == normalizar(ficha['federacion']))
+        distinta_fed = bool(federacion and normalizar(ficha['federacion']) and not misma_fed)
         if misma_fed:
-            motivos.append('Coincide la federación indicada en la fuente')
+            motivos.append('Coincide la federación de la fuente o del club identificado')
         puntuacion = 1.0 if (mismo_documento or variante) else min(.99999, .88 * nombre + .1 * club + .02 * misma_fed)
+        omitido = apellido_omitido(participante, ficha)
+        conflicto_contexto = False
+        if omitido and not mismo_documento and not variante:
+            if distinta_fed:
+                motivos.append('Falta un apellido y la federación indicada es distinta (fuente o club identificado)')
+                puntuacion = min(puntuacion, .64)
+                abreviado = False
+            elif club == 1.0:
+                puntuacion = max(puntuacion, .95)
+                motivos.append('Coinciden nombre, primer apellido y club; falta un apellido')
+        if abreviado:
+            motivos.append('Nombre compatible con una abreviatura o un apellido omitido: revisar identidad')
         salida.append({**ficha, 'indice_similitud': Decimal(str(round(puntuacion, 5))),
                        'motivos': '; '.join(motivos) or 'Resultado de la búsqueda manual',
-                       'variante_confirmada': variante, 'coincidencia_descartada': descartada})
+                       'variante_confirmada': variante, 'coincidencia_descartada': descartada,
+                       'nombre_abreviado':abreviado, 'conflicto_contexto':conflicto_contexto})
     return sorted(salida, key=lambda r: (-int(bool(documento and r['dni'].upper()==documento)), -r['indice_similitud'], r['apellidos'], r['nombre'], r['dni']))[:limite]
 
 

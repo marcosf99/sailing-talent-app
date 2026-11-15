@@ -109,8 +109,11 @@ def listar_filas(conexion, identificador):
 
 def listar_participantes(conexion, identificador):
     return [dict(r) for r in conexion.execute(text("""
-        SELECT p.* FROM public.participante_importado p
+        SELECT p.*, fa.nombre AS federacion_club_identificado
+        FROM public.participante_importado p
         JOIN public.fila_clasificacion_importada f ON f.id_fila=p.id_fila
+        LEFT JOIN public.club c ON c.id_club=p.id_club_identificado
+        LEFT JOIN public.federacion_autonomica fa ON fa.id_federacion=c.id_federacion
         WHERE f.id_importacion=:id
         ORDER BY f.numero_fila, p.orden_en_tripulacion
     """).columns(fecha_nacimiento_propuesta=Date(), confirmado_en=DateTime(timezone=True)),
@@ -133,9 +136,11 @@ def contexto_participante(conexion, identificador):
     r = conexion.execute(text("""
         SELECT p.*, f.id_importacion, f.cumple_criterio, f.posicion_general,
                f.numero_vela_original,
-               f.estado AS estado_fila
+               f.estado AS estado_fila, fa.nombre AS federacion_club_identificado
         FROM public.participante_importado p
         JOIN public.fila_clasificacion_importada f ON f.id_fila=p.id_fila
+        LEFT JOIN public.club c ON c.id_club=p.id_club_identificado
+        LEFT JOIN public.federacion_autonomica fa ON fa.id_federacion=c.id_federacion
         WHERE p.id_participante_importado=:id
     """), {"id": identificador}).mappings().first()
     return dict(r) if r else None
@@ -334,6 +339,71 @@ def valores_lote(filas, columnas, tipos):
             claves.append(f'CAST(:{clave} AS {tipo})')
         valores.append('(' + ','.join(claves) + ')')
     return ','.join(valores), parametros
+
+
+def guardar_altas_lote(conexion, altas):
+    """Fichas, propuestas e identidades confirmadas; no modifica la fuente."""
+    for desde in range(0, len(altas), 200):
+        lote = altas[desde:desde+200]
+        columnas = ('dni','nombre','apellidos','fecha_nacimiento','sexo','id_club')
+        valores, parametros = valores_lote([a['ficha'] for a in lote], columnas,
+            ('VARCHAR(20)','VARCHAR(100)','VARCHAR(150)','DATE','VARCHAR(20)','INTEGER'))
+        conexion.execute(text('INSERT INTO public.deportista (' + ','.join(columnas) + ') VALUES ' + valores)
+            .bindparams(*[bindparam(f'fecha_nacimiento_{i}',type_=Date()) for i in range(len(lote))]),parametros)
+        columnas = ('id','dni','nombre_propuesto','apellidos_propuestos','documento_propuesto',
+            'fecha_nacimiento_propuesta','sexo_propuesto','id_club_identificado',
+            'rol_propuesto','observaciones_revision')
+        valores, parametros = valores_lote([dict(a['propuesta'],id=a['id'],dni=a['ficha']['dni']) for a in lote],
+            columnas, ('INTEGER','VARCHAR(20)','VARCHAR(100)','VARCHAR(150)','VARCHAR(20)',
+                      'DATE','VARCHAR(20)','INTEGER','VARCHAR(30)','TEXT'))
+        cambios = ','.join(c+'=(SELECT '+c+' FROM altas WHERE id=id_participante_importado)' for c in columnas[2:])
+        conexion.execute(text('WITH altas('+','.join(columnas)+') AS (VALUES '+valores+''')
+            UPDATE public.participante_importado SET '''+cambios+''',
+                dni_deportista_confirmado=(SELECT dni FROM altas WHERE id=id_participante_importado),
+                confirmado_en=CURRENT_TIMESTAMP,estado='nuevo_confirmado'
+            WHERE id_participante_importado IN (SELECT id FROM altas)''')
+            .bindparams(*[bindparam(f'fecha_nacimiento_propuesta_{i}',type_=Date()) for i in range(len(lote))]),parametros)
+
+
+def sugerencias_altas_lote(conexion, sugerencias, participantes):
+    """Conserva el rastro de coincidencias rechazadas al confirmar otra ficha."""
+    for desde in range(0,len(sugerencias),200):
+        lote=sugerencias[desde:desde+200]
+        valores,parametros=valores_lote(lote,('id','dni','indice','motivos'),
+            ('INTEGER','VARCHAR(20)','NUMERIC','TEXT'))
+        conexion.execute(text('''INSERT INTO public.coincidencia_propuesta
+            (id_participante_importado,dni_deportista,indice_similitud,motivos) VALUES '''+valores+'''
+            ON CONFLICT (id_participante_importado,dni_deportista) DO UPDATE SET
+                indice_similitud=excluded.indice_similitud,motivos=excluded.motivos
+            WHERE coincidencia_propuesta.estado_revision='pendiente' ''')
+            .bindparams(*[bindparam(f'indice_{i}',type_=Numeric()) for i in range(len(lote))]),parametros)
+    for desde in range(0,len(participantes),200):
+        conexion.execute(text('''UPDATE public.coincidencia_propuesta
+            SET estado_revision='rechazada',revisado_en=CURRENT_TIMESTAMP
+            WHERE id_participante_importado IN :ids''').bindparams(bindparam('ids',expanding=True)),
+            {'ids':participantes[desde:desde+200]})
+
+
+def guardar_resultados_lote(conexion, nuevos, confirmadas):
+    """Escribe resultados y referencias por bloques dentro de la transacción."""
+    for desde in range(0, len(nuevos), 200):
+        lote = nuevos[desde:desde+200]
+        columnas = ('unidad', 'co', 'posicion_general', 'posicion_categoria', 'puntos')
+        valores, parametros = valores_lote(lote, columnas,
+            ('INTEGER', 'INTEGER', 'INTEGER', 'INTEGER', 'NUMERIC(10,2)'))
+        sentencia = text('''INSERT INTO public.participa_en
+            (id_unidad,id_competicion,posicion_general,posicion_categoria,puntos)
+            VALUES ''' + valores).bindparams(*[
+                bindparam(f'puntos_{i}', type_=Numeric(10, 2)) for i in range(len(lote))])
+        conexion.execute(sentencia, parametros)
+    for desde in range(0, len(confirmadas), 200):
+        valores, parametros = valores_lote(confirmadas[desde:desde+200],
+            ('id', 'unidad', 'co'), ('INTEGER', 'INTEGER', 'INTEGER'))
+        conexion.execute(text('WITH confirmadas(id,unidad,co) AS (VALUES ' + valores + ''')
+            UPDATE public.fila_clasificacion_importada SET estado='importada',
+                id_unidad_confirmada=(SELECT unidad FROM confirmadas WHERE id=id_fila),
+                id_competicion_confirmada=(SELECT co FROM confirmadas WHERE id=id_fila),
+                incidencias=NULL WHERE id_fila IN (SELECT id FROM confirmadas)'''), parametros)
 
 
 def guardar_vinculos_lote(conexion, filas):

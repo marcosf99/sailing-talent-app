@@ -1,6 +1,6 @@
 """Revisión explícita por lotes: propuestas de lectura y escrituras atómicas."""
 from difflib import SequenceMatcher
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import hashlib
 import json
 
@@ -10,7 +10,7 @@ from database import importaciones as datos
 from services import importaciones as base
 from services import revision_participantes as revision
 from services import resultados_importados as resultados
-from services.deportistas import ValidacionError, ConflictoError
+from services.deportistas import ValidacionError, ConflictoError, documento_provisional_lote
 
 
 def _huella(valor):
@@ -81,6 +81,77 @@ def _version_ficha(ficha):
     return _huella({k: ficha.get(k) for k in ('dni', 'nombre', 'apellidos', 'fecha_nacimiento', 'sexo', 'id_club', 'memoria_nombres')})
 
 
+def validar_umbral_altas(valor):
+    if isinstance(valor,bool):
+        raise ValidacionError('El umbral debe estar entre 0,65 y 0,85.')
+    try:umbral=Decimal(str(valor))
+    except (InvalidOperation,ValueError,TypeError):raise ValidacionError('El umbral debe estar entre 0,65 y 0,85.') from None
+    if not umbral.is_finite() or not Decimal('.65')<=umbral<=Decimal('.85'):
+        raise ValidacionError('El umbral debe estar entre 0,65 y 0,85.')
+    return umbral
+
+
+def plan_altas_automaticas(contenido, propuestas, umbral='.75'):
+    """Plan sin escrituras; solo identidades débiles y equipos completos."""
+    umbral=validar_umbral_altas(umbral)
+    decisiones,pendientes=[],[]
+    maximas={}
+    for r in propuestas:
+        p=r['participante'];candidatos=r.get('candidatos',[])
+        nombre,apellidos=revision.nombre_inicial(p)
+        motivo=None
+        if any('indice_similitud' not in x for x in candidatos) or (r['coincidencias'] and not candidatos):
+            motivo='Falta actualizar las similitudes.'
+        else:
+            maxima=max((Decimal(str(x['indice_similitud'])) for x in candidatos),default=Decimal(0))
+            maximas[p['id_participante_importado']]=maxima
+            if maxima>=umbral:motivo='Coincidencia igual o superior al umbral: revisar identidad.'
+            elif any(x.get('nombre_abreviado') for x in candidatos):
+                motivo='Nombre compatible con una abreviatura o un apellido omitido: revisar identidad.'
+        if motivo is None and (not nombre.strip() or not apellidos.strip()):
+            motivo='Falta confirmar nombre y apellidos.'
+        if motivo is None and p['id_club_identificado'] is None:motivo='Falta identificar el club.'
+        if motivo is None and p['fila'].get('datos_originales',{}).get('avisos_extraccion'):
+            motivo='La extracción de nombres tiene avisos pendientes.'
+        if motivo:
+            pendientes.append(dict(participante=p['id_participante_importado'],puesto=p['fila']['posicion_general'],nombre=p['nombre_original'],motivo=motivo))
+            continue
+        campos=dict(
+            nombre=nombre,apellidos=apellidos,
+            fecha_nacimiento=p['fecha_nacimiento_propuesta'],sexo=p['sexo_propuesto'],
+            id_club=p['id_club_identificado'],rol_propuesto=('Patron' if contenido['importacion']['numero_tripulantes']==1 else p['rol_propuesto']),
+            observaciones_revision=f'Alta automática: similitud máxima {maximas[p["id_participante_importado"]]} inferior al umbral {umbral}; identificador TEMP- pendiente de DNI.')
+        try:
+            revision._validar_campos({**campos,'dni':'TEMP-VALIDACION'},completo=True)
+            fecha=contenido['importacion'].get('fecha_inicio_propuesta')
+            if campos['fecha_nacimiento'] and fecha and campos['fecha_nacimiento']>fecha:
+                raise ValidacionError('El nacimiento es posterior a la regata.')
+        except ValidacionError as error:
+            pendientes.append(dict(participante=p['id_participante_importado'],puesto=p['fila']['posicion_general'],nombre=p['nombre_original'],motivo=str(error)))
+            continue
+        decisiones.append(dict(participante=p['id_participante_importado'],version=r['version'],campos=campos))
+    # Comparar también las identidades nuevas entre sí, en ambas direcciones.
+    personas={r['participante']['id_participante_importado']:r['participante'] for r in propuestas}
+    fichas=[dict(d['campos'],dni='ALTA-'+str(d['participante']),club=None,federacion=None) for d in decisiones]
+    ids_por_dni={f['dni']:d['participante'] for f,d in zip(fichas,decisiones)}
+    dudosas=set()
+    for d,f in zip(decisiones,fichas):
+        p=personas[d['participante']]
+        candidatos=revision._candidatos(None,p,fichas=[otra for otra in fichas if otra['dni']!=f['dni']],aliases=[])
+        for otra in candidatos:
+            if otra['indice_similitud']>=umbral or otra.get('nombre_abreviado'):
+                dudosas.update((d['participante'],ids_por_dni[otra['dni']]))
+    faltas=incidencias_altas(contenido,[d for d in decisiones if d['participante'] not in dudosas])
+    preparadas=[]
+    for d in decisiones:
+        p=personas[d['participante']]
+        motivo=('Se parece a otra alta del mismo documento: revisar ambas identidades.' if d['participante'] in dudosas
+                else faltas.get(p['id_fila']))
+        if motivo:pendientes.append(dict(participante=d['participante'],puesto=p['fila']['posicion_general'],nombre=p['nombre_original'],motivo=motivo))
+        else:preparadas.append(d)
+    return dict(decisiones=preparadas,pendientes=pendientes,maximas=maximas,umbral=str(umbral))
+
+
 def _propuestas(c, contenido, fichas, aliases):
     salida = []
     for p in _pendientes(contenido):
@@ -95,7 +166,7 @@ def _propuestas(c, contenido, fichas, aliases):
                      or primero['indice_similitud']-candidatos[1]['indice_similitud'] >= Decimal('.05')))
             nacimiento = p.get('fecha_nacimiento_propuesta')
             compatible = not (nacimiento and primero.get('fecha_nacimiento') and nacimiento != primero['fecha_nacimiento'])
-            if exacto or (clara and compatible):
+            if exacto or (clara and compatible and not primero.get('conflicto_contexto')):
                 propuesta = {**primero, 'version_ficha': _version_ficha(primero)}
                 motivo = primero['motivos']
             else:
@@ -324,14 +395,21 @@ def guardar_en_proveedor(proveedor, operacion, identificador, decisiones, versio
                                       datos_resultado=datos_resultado)
         if operacion == 'altas_resultados':
             return crear_nuevos(motor, identificador, decisiones, version, datos_resultado, confirmar=True)
+        if operacion == 'altas_automaticas':
+            if not isinstance(decisiones,dict) or set(decisiones)!={'umbral'}:
+                raise ValidacionError('Confirma el umbral de las altas automáticas.')
+            return crear_nuevos(motor,identificador,None,version,datos_resultado,
+                confirmar=True,umbral_altas=decisiones['umbral'])
         raise ValidacionError('Selecciona una operación de revisión válida.')
     finally:
         motor.dispose()
 
 
-def crear_nuevos(engine, identificador, decisiones, version, datos_resultado, *, confirmar=False):
+def crear_nuevos(engine, identificador, decisiones, version, datos_resultado, *, confirmar=False,umbral_altas=None):
     """Altas provisionales conservadoras y sus resultados, sin saltar coincidencias."""
-    if confirmar is not True or not isinstance(decisiones, list) or not decisiones:
+    automatico=umbral_altas is not None
+    umbral_altas=validar_umbral_altas(umbral_altas) if automatico else None
+    if confirmar is not True or (automatico and decisiones is not None) or (not automatico and (not isinstance(decisiones,list) or not decisiones)):
         raise ValidacionError('Selecciona y confirma las altas revisadas.')
     try:
         with engine.begin() as c:
@@ -339,9 +417,16 @@ def crear_nuevos(engine, identificador, decisiones, version, datos_resultado, *,
             if version != resultados.version_resultados(contenido):
                 raise ConflictoError('El borrador cambió. Actualiza antes de crear el lote.')
             resultados._metadatos(datos_resultado)
+            imp=contenido['importacion']
+            competicion=datos.referencia_competicion(c,imp['id_competicion']) if imp['id_competicion'] else None
+            fecha_regata=competicion['fecha_inicio'] if competicion else imp['fecha_inicio_propuesta']
             fichas, aliases = datos.fichas_revision(c), datos.aliases_revision(c)
             clubes = {cl['id_club']:cl for cl in datos.clubes_revision(c)}
             pendientes = {p['id_participante_importado']: p for p in _pendientes(contenido)}
+            if automatico:
+                plan=plan_altas_automaticas(contenido,_propuestas(c,contenido,fichas,aliases),umbral_altas)
+                decisiones=plan['decisiones']
+                if not decisiones:raise ValidacionError('No hay altas automáticas preparadas con este umbral. Revisa las identidades o los equipos pendientes.')
             # Validar la forma antes de simular, sin confiar en datos de la interfaz.
             for d in decisiones:
                 if not isinstance(d, dict) or not {'participante', 'version', 'campos'} <= set(d) or set(d) - {'participante', 'version', 'campos', 'confirmar_distinto_lote'} or not isinstance(d['campos'], dict):
@@ -352,6 +437,8 @@ def crear_nuevos(engine, identificador, decisiones, version, datos_resultado, *,
                 raise ValidacionError('No se guardó ninguna alta. ' + ' | '.join(faltas.values()))
             fichas_iniciales = list(fichas)
             vistos, afectadas = set(), set()
+            ocupados={f['dni'].upper() for f in fichas}
+            altas,sugerencias,memorias=[],[],[]
             for d in decisiones:
                 if not isinstance(d, dict) or not {'participante', 'version', 'campos'} <= set(d) or set(d) - {'participante', 'version', 'campos', 'confirmar_distinto_lote'}:
                     raise ValidacionError('Una alta del lote contiene datos no admitidos.')
@@ -365,16 +452,22 @@ def crear_nuevos(engine, identificador, decisiones, version, datos_resultado, *,
                     raise ValidacionError('Revisa los campos de la nueva ficha.')
                 contexto = f"Puesto {p['fila']['posicion_general']} · {p['nombre_original']}: "
                 try:
-                    revision._validar_campos({**campos, 'dni': 'TEMP-VALIDACION'}, completo=True)
+                    ficha,propuesta_validada=revision._validar_campos({**campos, 'dni': 'TEMP-VALIDACION'}, completo=True)
                 except ValidacionError as error:
                     raise ValidacionError(contexto + str(error) + ' No se creó ninguna ficha del lote.') from None
                 if not campos.get('id_club') or campos['id_club'] != p['id_club_identificado']:
                     raise ValidacionError(contexto + 'Confirma primero el club del participante para crear altas por lotes.')
-                # Se vuelven a buscar coincidencias después de cada alta: impide
+                if campos['id_club'] not in clubes:
+                    raise ValidacionError(contexto+'El club seleccionado ya no existe.')
+                if d['version'] != revision.version_participante(p):
+                    raise ConflictoError(contexto+'La revisión cambió. Actualiza los datos antes de guardar.')
+                if ficha['fecha_nacimiento'] and fecha_regata and ficha['fecha_nacimiento']>fecha_regata:
+                    raise ValidacionError(contexto+'El nacimiento no puede ser posterior a la regata.')
+                # Se contrastan también las altas anteriores del lote, aún sin escribir: impide
                 # duplicar también dos personas del mismo lote con distinto ID.
                 propuesta = {**p, 'nombre_propuesto': campos.get('nombre'), 'apellidos_propuestos': campos.get('apellidos')}
                 existentes = revision._candidatos(c, propuesta, fichas=fichas_iniciales, aliases=aliases)
-                if existentes:
+                if existentes and (not automatico or any(x['indice_similitud']>=umbral_altas or x.get('nombre_abreviado') for x in existentes)):
                     nombres = ', '.join(f['nombre']+' '+f['apellidos'] for f in existentes)
                     raise ConflictoError(f"{campos['nombre']} {campos['apellidos']}: hay fichas existentes similares ({nombres}). Revisa esa persona individualmente; no se creó ninguna ficha del lote.")
                 similares_lote = revision._candidatos(c, propuesta, fichas=fichas[len(fichas_iniciales):], aliases=aliases)
@@ -384,15 +477,40 @@ def crear_nuevos(engine, identificador, decisiones, version, datos_resultado, *,
                 completo = revision.normalizar(campos['nombre']+' '+campos['apellidos'])
                 if any(revision.normalizar(f['nombre']+' '+f['apellidos']) == completo for f in similares_lote):
                     raise ConflictoError(f"{campos['nombre']} {campos['apellidos']}: el mismo nombre aparece en varias altas del lote. Revisa esa identidad individualmente; no se creó ninguna ficha.")
-                if similares_lote and distinto is not True:
+                if similares_lote and distinto is not True and (not automatico or any(x['indice_similitud']>=umbral_altas or x.get('nombre_abreviado') for x in similares_lote)):
                     nombres = ', '.join(f['nombre']+' '+f['apellidos'] for f in similares_lote)
                     raise ConflictoError(f"{campos['nombre']} {campos['apellidos']} se parece a otra alta de este lote ({nombres}). Confirma que son personas distintas; no se creó ninguna ficha del lote.")
-                dni = revision.guardar_revision_en_conexion(c, ident, 'crear', {**campos, 'dni': None}, d['version'],
-                    confirmar_nuevo_distinto=distinto, fichas=fichas,aliases=aliases)
+                dni=documento_provisional_lote(ocupados)
+                ficha['dni']=dni
+                propuesta_validada['documento_propuesto']=dni
+                if imp['numero_tripulantes']==1:propuesta_validada['rol_propuesto']='Patron'
+                permitidos={x['dni'] for x in similares_lote}
+                descartes=campos.get('descartar_dnis',[])
+                if any(x==dni or x not in permitidos for x in descartes):
+                    raise ValidacionError(contexto+'Solo puedes descartar otras fichas mostradas como candidatas en esta revisión.')
+                altas.append(dict(id=ident,ficha=ficha,propuesta=propuesta_validada))
+                sugerencias.extend(dict(id=ident,dni=x['dni'],indice=x['indice_similitud'],motivos=x['motivos']) for x in similares_lote+(existentes if automatico else []))
+                if campos.get('recordar_nombre'):
+                    memorias.append((p,dni,'variante'))
+                memorias.extend((p,x,'descarte') for x in set(descartes))
                 club = clubes[campos['id_club']]
-                fichas.append(dict(campos,dni=dni,club=club['nombre'],id_federacion=club['id_federacion'],federacion=club['federacion']))
+                fichas.append(dict(ficha,club=club['nombre'],id_federacion=club['id_federacion'],federacion=club['federacion']))
                 afectadas.add(p['id_fila'])
+            # El borrador está bloqueado y todas las decisiones se validaron antes de escribir.
+            datos.guardar_altas_lote(c,altas)
+            datos.sugerencias_altas_lote(c,sugerencias,sorted(vistos))
+            from services import memoria_nombres
+            for persona,dni,tipo in memorias:
+                memoria_nombres.guardar(c,persona,dni,tipo)
+            datos.marcar_en_revision(c,identificador)
             actual = _contenido(c, identificador)
+            estados=[]
+            for f in actual['filas']:
+                if f['id_fila'] in afectadas:
+                    estado,incidencias=revision.estado_fila(f,resultados.miembros_fila(actual,f),imp['numero_tripulantes'])
+                    estados.append(dict(id=f['id_fila'],estado=estado,incidencias=incidencias))
+                    f.update(estado=estado,incidencias=incidencias)
+            datos.estados_filas_lote(c,estados)
             listas = [f['id_fila'] for f in resultados.filas_preparadas(actual) if f['id_fila'] in afectadas]
             if afectadas != set(listas):
                 raise ValidacionError('Completa los miembros, roles, puestos y puntos de los equipos del lote. No se guardó ninguna alta.')
