@@ -348,6 +348,47 @@ class ResultadosImportados(unittest.TestCase):
         with self.assertRaises(ConflictoError):self.aplicar()
         self.assertEqual(self.contar('participa_en'),0)
 
+    def test_fin_historico_exige_fecha_manual_pasada_que_cubra_la_regata(self):
+        for cierre in (None,'2026-10-04',date(2026,10,3),date(2999,1,1)):
+            with self.subTest(cierre=cierre), self.assertRaises(ValidacionError):
+                s._metadatos({**self.campos,'fecha_fin_etapa_historica':cierre})
+
+    def test_cierre_historico_no_cierra_mismo_equipo_ni_equipo_sin_etapa_posterior(self):
+        self.confirmar()
+        self.aplicar(campos={**self.campos,'fecha_fin_etapa_historica':date(2026,10,4)})
+        with self.engine.connect() as c:
+            self.assertIsNone(c.exec_driver_sql('SELECT fecha_fin FROM unidad_competitiva').scalar_one())
+        otro=self.db.crear();self.confirmar(ident=otro)
+        self.aplicar(ident=otro,campos={**self.campos,'nombre':'Anterior','fecha_inicio':date(2026,9,1),
+            'fecha_fin':date(2026,9,2),'fecha_fin_etapa_historica':date(2026,9,2)})
+        with self.engine.connect() as c:
+            self.assertEqual(c.exec_driver_sql('SELECT fecha_inicio,fecha_fin FROM unidad_competitiva').one(),('2026-09-01',None))
+        self.assertEqual(self.contar('unidad_competitiva'),1)
+
+    def test_error_roles_posteriores_detalla_equipo_regata_y_fecha_sin_documentos(self):
+        with self.engine.begin() as c:
+            c.exec_driver_sql("INSERT INTO unidad_competitiva VALUES (1,'2026-10-20',NULL,1)")
+            c.exec_driver_sql("INSERT INTO forma_parte VALUES ('D1',1,'Tripulante')")
+        self.confirmar()
+        with self.assertRaises(ConflictoError) as error:
+            self.aplicar()
+        mensaje=str(error.exception)
+        for texto in ('Puesto 1','Ana Pérez','patrón','tripulante','roles son distintos',
+                      '03/10/2026','04/10/2026','20/10/2026','sin cierre','No se guardó ninguna parte del lote'):
+            self.assertIn(texto,mensaje)
+        self.assertNotIn('D1',mensaje)
+        self.assertEqual(self.contar('participa_en'),0)
+
+    def test_error_cierre_no_cubre_regata_indica_ambas_fechas(self):
+        with self.engine.begin() as c:
+            c.exec_driver_sql("INSERT INTO unidad_competitiva VALUES (1,'2026-10-02','2026-10-03',1)")
+            c.exec_driver_sql("INSERT INTO forma_parte VALUES ('D1',1,'Patron')")
+        self.confirmar()
+        with self.assertRaises(ConflictoError) as error:
+            self.aplicar()
+        for texto in ('Puesto 1','Ana Pérez','03/10/2026','04/10/2026','fechas'):
+            self.assertIn(texto,str(error.exception))
+
     def test_optimist_limite_14_y_edad_desconocida(self):
         with self.engine.begin() as c:
             c.exec_driver_sql("UPDATE deportista SET fecha_nacimiento='2011-12-30' WHERE dni='D1'")

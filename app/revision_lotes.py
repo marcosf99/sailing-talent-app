@@ -26,12 +26,12 @@ def mostrar(proveedor, motor, lectura, revision, clubes, al_guardar, datos_regat
     with st.expander('1. Resolver clubes del documento', expanded=bool(resumen['grupos_club'])):
         _clubes(proveedor, identificador, resumen['grupos_club'], clubes, prefijo, al_guardar)
     with st.expander('2. Vincular participantes en una tabla', expanded=bool(resumen['propuestas'])):
-        _participantes(proveedor, identificador, resumen, revision['importacion']['numero_tripulantes'], clubes, prefijo, al_guardar, datos_regata)
+        _participantes(proveedor, identificador, resumen, revision['importacion']['numero_tripulantes'], clubes, prefijo, al_guardar, datos_regata, revision)
     nuevas = [r for r in resumen['propuestas'] if r['coincidencias'] == 0 and r['participante']['id_club_identificado'] is not None]
     if nuevas and datos_regata is not None:
         with st.expander('3. Crear fichas sin DNI e incorporar resultados'):
             _nuevos(proveedor, identificador, resumen, nuevas, revision['importacion']['numero_tripulantes'], clubes,
-                    prefijo, al_guardar, datos_regata)
+                    prefijo, al_guardar, datos_regata, revision)
 
 
 def _guardar(proveedor, operacion, identificador, decisiones, version, al_guardar, datos_regata=None):
@@ -48,7 +48,10 @@ def _guardar(proveedor, operacion, identificador, decisiones, version, al_guarda
         if operacion == 'clubes':
             al_guardar(f'{salida["clubes"]} clubes confirmados para {salida["participantes"]} participantes pendientes. Las propuestas se han actualizado.')
         elif operacion == 'vinculos_resultados':
-            al_guardar(f'{salida["vinculados"]} fichas vinculadas y {salida["resultados_incorporados"]} resultados incorporados. Ya puedes consultarlos en las fichas.')
+            pendientes = salida.get('equipos_pendientes', 0)
+            aviso = (f' {pendientes} equipos esperan la identidad del otro miembro; completa sus fichas para incorporar esos resultados.'
+                     if pendientes else ' Ya puedes consultarlos en las fichas.')
+            al_guardar(f'{salida["vinculados"]} fichas vinculadas y {salida["resultados_incorporados"]} resultados incorporados.' + aviso)
         elif operacion == 'altas_resultados':
             al_guardar(f'{salida["creados"]} fichas creadas con identificador provisional y {salida["resultados_incorporados"]} resultados incorporados. El DNI se puede completar en Gestión de deportistas.')
         else:
@@ -93,20 +96,36 @@ def _clubes(proveedor, identificador, grupos, clubes, prefijo, al_guardar):
         _guardar(proveedor, 'clubes', identificador, decisiones, None, al_guardar)
 
 
-def _participantes(proveedor, identificador, resumen, tripulantes, clubes, prefijo, al_guardar, datos_regata=None):
+def _participantes(proveedor, identificador, resumen, tripulantes, clubes, prefijo, al_guardar, datos_regata=None, revision=None):
     st.caption('Puedes seleccionar todas las coincidencias propuestas y desmarcar las que no correspondan. Comprueba nombre, club y nacimiento. '
                'Las identidades ambiguas, las búsquedas de otra ficha y las altas nuevas se resuelven en el formulario individual de abajo.')
+    dudosas = [r for r in resumen['propuestas'] if r['propuesta'] is None and r['coincidencias'] > 0]
+    if dudosas:
+        st.warning('Hay participantes con identidades por comprobar. No se ofrecen como altas automáticas para evitar duplicados.')
+        st.table(pd.DataFrame([{
+            'Puesto': r['participante']['fila']['posicion_general'],
+            'Participante pendiente': r['participante']['nombre_original'],
+            'Fichas similares que comprobar': ' / '.join(
+                c['nombre'] + ' ' + c['apellidos'] for c in r.get('candidatos', [])),
+            'Motivo': r['motivo']} for r in dudosas]))
+        st.caption('Activa «Revisar una identidad individual · coincidencias dudosas o correcciones» más abajo. '
+                   'Selecciona la persona y, si es distinta de las fichas similares, elige Crear deportista y confirma que es otra persona. '
+                   'Revisa ambos miembros antes de incorporar el resultado del equipo.')
     propuestas = [r for r in resumen['propuestas'] if r['propuesta'] is not None]
     if not propuestas:
         st.info('No hay fichas existentes propuestas para vincular. Las altas nuevas aparecen en Crear fichas sin DNI; las coincidencias dudosas pueden revisarse individualmente.')
         return
+    previstas = [dict(participante=r['participante']['id_participante_importado'],
+                      campos={'rol_propuesto':r['participante']['rol_propuesto']}) for r in propuestas]
+    faltas = servicio.incidencias_altas(revision, previstas) if revision else {}
     mapa = {r['participante']['id_participante_importado']: r for r in propuestas}
     nombres_club = {c['id_club']: c['nombre'] for c in clubes}
     todos = st.checkbox('Seleccionar todas las coincidencias propuestas', key=prefijo+'_todos_participantes')
     filas = []
     for r in propuestas:
         p, ficha = r['participante'], r['propuesta']
-        filas.append({'Vincular': bool(todos and ficha), 'Puesto': p['fila']['posicion_general'],
+        filas.append({'Vincular': bool(todos and ficha),
+            'Estado del equipo': faltas.get(p['id_fila'], 'Preparado al confirmar sus miembros'), 'Puesto': p['fila']['posicion_general'],
             'Puntos': p['fila']['puntos'],
             'Nombre en la fuente': p['nombre_original'], 'Club en la fuente': p['club_original'],
             'Club identificado en fuente': nombres_club.get(p['id_club_identificado']),
@@ -125,7 +144,9 @@ def _participantes(proveedor, identificador, resumen, tripulantes, clubes, prefi
     incorporar = False
     if datos_regata is not None:
         incorporar = st.checkbox('Vincular e incorporar los resultados en este paso', value=True, key=prefijo+'_incorporar')
-        st.caption('Se utilizarán los Datos de la regata indicados arriba. En clases dobles deben estar completos ambos miembros y sus roles. Si hay un conflicto, no se guarda ninguna parte del lote.')
+        st.caption('Se vincularán todas las fichas que selecciones y se incorporarán los resultados de los equipos completos. '
+                   'Si falta identificar a su pareja, el vínculo se guardará y el resultado quedará pendiente. '
+                   'Después podrás crear o vincular al otro miembro. Los conflictos de identidad, roles o resultados revierten el lote.')
     else:
         st.caption('Este paso vincula identidades y prepara los resultados para su incorporación posterior.')
     confirmar = st.checkbox('Confirmo que cada ficha seleccionada corresponde al participante de su fila.', key=prefijo+'_confirmar_vinculos')
@@ -151,10 +172,17 @@ def _participantes(proveedor, identificador, resumen, tripulantes, clubes, prefi
                  resumen['version'], al_guardar, datos_regata if incorporar else None)
 
 
-def _nuevos(proveedor, identificador, resumen, nuevas, tripulantes, clubes, prefijo, al_guardar, datos_regata):
+def _nuevos(proveedor, identificador, resumen, nuevas, tripulantes, clubes, prefijo, al_guardar, datos_regata, revision):
     st.caption('Solo se ofrecen altas sin fichas similares y con el club confirmado. Revisa la separación de nombres y apellidos. '
                'Se asignará un identificador TEMP- a cada ficha; no es un DNI. El nacimiento desconocido seguirá sin registrar. '
                'Los Datos de la regata indicados arriba se usarán para incorporar los resultados.')
+    previsiones = [dict(participante=r['participante']['id_participante_importado'],
+                        campos={'rol_propuesto': r['participante']['rol_propuesto']}) for r in nuevas]
+    faltas = servicio.incidencias_altas(revision, previsiones)
+    if faltas:
+        st.info('Los equipos pendientes quedan sin seleccionar. Puedes guardar los completos y volver después a los demás.')
+        for falta in faltas.values():
+            st.caption(falta)
     todos = st.checkbox('Seleccionar todas las altas propuestas', key=prefijo+'_todas_altas')
     nombres_club = {c['id_club']: c['nombre'] for c in clubes}
     filas, mapa = [], {}
@@ -163,28 +191,46 @@ def _nuevos(proveedor, identificador, resumen, nuevas, tripulantes, clubes, pref
         ident = p['id_participante_importado']
         mapa[ident] = r
         partes = p['nombre_original'].split(' ', 1)
-        filas.append({'Crear': todos, 'Puesto': p['fila']['posicion_general'], 'Puntos': p['fila']['puntos'],
+        filas.append({'Crear': bool(todos and p['id_fila'] not in faltas),
+            'Estado del equipo': faltas.get(p['id_fila'], 'Completo para este lote'), 'Puesto': p['fila']['posicion_general'], 'Puntos': p['fila']['puntos'],
             'Nombre en la fuente': p['nombre_original'], 'Nombre': p['nombre_propuesto'] or partes[0],
             'Apellidos': p['apellidos_propuestos'] or (partes[1] if len(partes)>1 else ''),
             'Club': nombres_club.get(p['id_club_identificado']),
             'Rol': 'Patrón' if tripulantes==1 else ROLES.get(p['rol_propuesto'])})
     marco = pd.DataFrame(filas, index=list(mapa))
     editado = st.data_editor(marco, hide_index=True, width='stretch', num_rows='fixed', key=prefijo+'_altas',
-        disabled=['Puesto','Puntos','Nombre en la fuente','Club'] + (['Rol'] if tripulantes==1 else []),
+        disabled=['Estado del equipo','Puesto','Puntos','Nombre en la fuente','Club'] + (['Rol'] if tripulantes==1 else []),
         column_config={'Crear': st.column_config.CheckboxColumn('Crear'),
                        'Rol': st.column_config.SelectboxColumn('Rol', options=list(ROLES.values()))})
     confirmar = st.checkbox('He revisado las altas seleccionadas, los clubes, la regata, los puestos y los puntos.', key=prefijo+'_confirmar_altas')
     elegidas = editado[editado['Crear'] == True]
-    if st.button('Crear fichas seleccionadas e incorporar resultados', disabled=elegidas.empty or not confirmar, key=prefijo+'_guardar_altas'):
-        decisiones = []
-        for ident, fila in elegidas.iterrows():
-            r, p = mapa[ident], mapa[ident]['participante']
-            rol = next((k for k,v in ROLES.items() if fila['Rol']==v),None)
-            if not rol:
-                st.error('Confirma el rol de cada miembro antes de crear las fichas.')
-                return
-            decisiones.append(dict(participante=int(ident), version=r['version'], campos=dict(
-                nombre=fila['Nombre'],apellidos=fila['Apellidos'],fecha_nacimiento=p['fecha_nacimiento_propuesta'],
-                sexo=p['sexo_propuesto'],id_club=p['id_club_identificado'],rol_propuesto=rol,
-                observaciones_revision='Alta por lote revisada; identificador provisional pendiente de DNI.')))
+    decisiones = []
+    for ident, fila in elegidas.iterrows():
+        r, p = mapa[ident], mapa[ident]['participante']
+        rol = next((k for k,v in ROLES.items() if fila['Rol']==v),None)
+        decisiones.append(dict(participante=int(ident), version=r['version'], campos=dict(
+            nombre=fila['Nombre'],apellidos=fila['Apellidos'],fecha_nacimiento=p['fecha_nacimiento_propuesta'],
+            sexo=p['sexo_propuesto'],id_club=p['id_club_identificado'],rol_propuesto=rol,
+            observaciones_revision='Alta por lote revisada; identificador provisional pendiente de DNI.')))
+    parecidas = servicio.similitudes_altas(revision, decisiones)
+    distintos = False
+    if parecidas:
+        st.warning('Hay nombres similares entre las nuevas fichas seleccionadas. Pueden ser familiares o una persona repetida: compruébalos antes de crear el lote.')
+        st.table(pd.DataFrame(parecidas))
+        distintos = st.checkbox('Confirmo que las personas con nombres similares de este lote son distintas.',
+            key=prefijo+'_distintos_'+servicio._huella(decisiones)[:12])
+    if st.button('Crear fichas seleccionadas e incorporar resultados',
+                 disabled=elegidas.empty or not confirmar or (bool(parecidas) and not distintos), key=prefijo+'_guardar_altas'):
+        if any(d['campos']['rol_propuesto'] is None for d in decisiones):
+            st.error('Confirma el rol de cada miembro antes de crear las fichas.')
+            return
+        if distintos:
+            for d in decisiones:
+                d['confirmar_distinto_lote'] = True
+                d['campos']['observaciones_revision'] += ' Confirmada identidad distinta de las otras altas similares del lote.'
+        problemas = servicio.incidencias_altas(revision, decisiones)
+        if problemas:
+            for problema in problemas.values():
+                st.error(problema)
+            return
         _guardar(proveedor,'altas_resultados',identificador,decisiones,resumen['version'],al_guardar,datos_regata)

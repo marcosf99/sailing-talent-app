@@ -57,7 +57,7 @@ def filas_preparadas(revision):
 
 
 def _metadatos(campos):
-    permitidos = {'nombre', 'fecha_inicio', 'fecha_fin', 'localidad', 'tipo_clasificacion'}
+    permitidos = {'nombre', 'fecha_inicio', 'fecha_fin', 'localidad', 'tipo_clasificacion', 'fecha_fin_etapa_historica'}
     if not isinstance(campos, dict) or set(campos) - permitidos:
         raise ValidacionError('Los datos de competición contienen campos no admitidos.')
     salida = dict(nombre=base._texto(campos.get('nombre'), 'nombre de la competición', 200, True),
@@ -72,6 +72,11 @@ def _metadatos(campos):
     salida['tipo_clasificacion'] = campos.get('tipo_clasificacion')
     if salida['tipo_clasificacion'] not in ('provisional', 'definitiva'):
         raise ValidacionError('Confirma si la clasificación es provisional o definitiva.')
+    if 'fecha_fin_etapa_historica' in campos:
+        cierre = campos['fecha_fin_etapa_historica']
+        if type(cierre) is not date or cierre > date.today() or cierre < salida['fecha_fin']:
+            raise ValidacionError('Indica el fin manual de la etapa histórica: debe cubrir la regata y no puede ser futuro.')
+        salida['fecha_fin_etapa_historica'] = cierre
     return salida
 
 
@@ -112,14 +117,43 @@ def _competicion(conexion, imp, campos):
     '''), {**campos, 'nivel': imp['nivel'], 'clase': imp['id_clase']}).scalar_one()
 
 
+def contexto_fila(contenido, fila):
+    roles = {'Patron': 'patrón', 'Tripulante': 'tripulante'}
+    nombres = ' / '.join(p['nombre_original'] + ' (' + roles.get(p.get('rol_propuesto'), 'rol pendiente') + ')'
+                         for p in miembros_fila(contenido, fila)) or 'tripulación pendiente'
+    return f"Puesto {fila['posicion_general'] or 'sin confirmar'} · {nombres}"
+
+
+def _fecha_aviso(valor):
+    return date.fromisoformat(str(valor)[:10]).strftime('%d/%m/%Y') if valor is not None else 'sin cierre'
+
+
+def _detalle_unidad(conexion, unidad):
+    u = conexion.execute(text('SELECT fecha_inicio,fecha_fin FROM public.unidad_competitiva WHERE id_unidad=:id'),
+                         {'id': unidad}).mappings().first()
+    if u is None:
+        return 'La unidad ya no existe.'
+    miembros = conexion.execute(text('''SELECT d.nombre,d.apellidos,fp.rol
+        FROM public.forma_parte fp JOIN public.deportista d ON d.dni=fp.dni_deportista
+        WHERE fp.id_unidad=:id ORDER BY fp.rol,d.apellidos,d.nombre'''), {'id': unidad}).mappings().all()
+    nombres = ' / '.join(f"{p['nombre']} {p['apellidos']} ({'patrón' if p['rol']=='Patron' else 'tripulante'})"
+                         for p in miembros)
+    return f"Equipo registrado: {nombres}. Inicio: {_fecha_aviso(u['fecha_inicio'])}; fin: {_fecha_aviso(u['fecha_fin'])}."
+
+
 def _anticipar_unidad(conexion, unidad, roles, clase, inicio, fin):
     """Amplía hacia atrás el mismo equipo, sin unir etapas ni cambiar su cierre."""
     u = conexion.execute(text('SELECT * FROM public.unidad_competitiva WHERE id_unidad=:id FOR UPDATE')
                          .columns(fecha_inicio=Date(), fecha_fin=Date()), {'id': unidad}).mappings().first()
     actuales = {r['dni_deportista']: r['rol'] for r in conexion.execute(text(
         'SELECT dni_deportista, rol FROM public.forma_parte WHERE id_unidad=:id'), {'id': unidad}).mappings()}
-    if u is None or actuales != roles or (u['fecha_fin'] is not None and u['fecha_fin'] < fin):
-        raise ConflictoError('La unidad posterior tiene otros miembros, roles o un cierre incompatible. Revisa sus equipos.')
+    if u is None:
+        raise ConflictoError('La unidad posterior ya no existe. Actualiza la revisión.')
+    if actuales != roles:
+        causa = 'La pareja es distinta.' if set(actuales) != set(roles) else 'Los miembros coinciden, pero sus roles son distintos.'
+        raise ConflictoError(causa + ' ' + _detalle_unidad(conexion, unidad) + ' Revisa las identidades y roles antes de incorporar.')
+    if u['fecha_fin'] is not None and u['fecha_fin'] < fin:
+        raise ConflictoError('El cierre de la unidad no cubre el final de la regata (' + _fecha_aviso(fin) + '). ' + _detalle_unidad(conexion, unidad))
     conflicto = conexion.execute(text('''SELECT DISTINCT u.id_unidad FROM public.unidad_competitiva u
         JOIN public.forma_parte fp ON fp.id_unidad=u.id_unidad
         WHERE u.id_clase=:clase AND fp.dni_deportista IN :dnis AND u.id_unidad<>:id
@@ -127,7 +161,7 @@ def _anticipar_unidad(conexion, unidad, roles, clase, inicio, fin):
     ''').bindparams(bindparam('dnis', expanding=True)),
         {'clase': clase, 'dnis': sorted(roles), 'id': unidad, 'anterior': u['fecha_inicio'], 'inicio': inicio}).first()
     if conflicto:
-        raise ConflictoError('Adelantar el inicio solaparía otra etapa de esta clase. Revisa sus equipos antes de incorporar.')
+        raise ConflictoError('Adelantar el inicio al ' + _fecha_aviso(inicio) + ' solaparía otra etapa de esta clase. ' + _detalle_unidad(conexion, conflicto[0]) + ' Revisa las fechas de ambas etapas.')
     if inicio < u['fecha_inicio']:
         conexion.execute(text('UPDATE public.unidad_competitiva SET fecha_inicio=:inicio WHERE id_unidad=:id'),
                          {'inicio': inicio, 'id': unidad})
@@ -173,7 +207,7 @@ def _unidad(conexion, imp, campos, miembros, *, personas=None):
             if actuales == roles and u['fecha_inicio'] > campos['fecha_inicio']:
                 return _anticipar_unidad(conexion, u['id_unidad'], roles, imp['id_clase'],
                                          campos['fecha_inicio'], campos['fecha_fin'])
-        raise ConflictoError('Un deportista tiene una unidad de esta clase con fechas o miembros incompatibles. Revisa sus equipos antes de incorporar.')
+        raise ConflictoError('La regata coincide con una unidad que no admite esa tripulación o esas fechas. ' + ' '.join(_detalle_unidad(conexion, u['id_unidad']) for u in unidades) + ' Revisa pareja, roles y fechas de la etapa existente.')
     # Buscar primero la etapa posterior más cercana: se puede adelantar su
     # inicio si conserva miembros, roles y cierre y no cruza otra etapa.
     filtro_limite = ' AND u.fecha_inicio<=:limite' if limite else ''
@@ -184,13 +218,35 @@ def _unidad(conexion, imp, campos, miembros, *, personas=None):
           AND u.fecha_inicio>:fin
     ''' + filtro_limite + ' ORDER BY u.fecha_inicio, u.id_unidad').bindparams(bindparam('dnis', expanding=True)),
         {'clase': imp['id_clase'], 'dnis': sorted(roles), 'fin': campos['fecha_fin'], 'limite': limite}).first()
+    cierre_historico = None
     if futura:
-        return _anticipar_unidad(conexion, futura.id_unidad, roles, imp['id_clase'],
-                                 campos['fecha_inicio'], campos['fecha_fin'])
+        # Bloquear y comparar antes de decidir entre ampliar el mismo equipo
+        # o registrar una etapa diferente con cierre manual explícito.
+        conexion.execute(text('SELECT id_unidad FROM public.unidad_competitiva WHERE id_unidad=:id FOR UPDATE'),
+                         {'id':futura.id_unidad}).first()
+        posteriores = {r['dni_deportista']:r['rol'] for r in conexion.execute(text(
+            'SELECT dni_deportista,rol FROM public.forma_parte WHERE id_unidad=:id'),
+            {'id':futura.id_unidad}).mappings()}
+        if posteriores == roles:
+            return _anticipar_unidad(conexion, futura.id_unidad, roles, imp['id_clase'],
+                                     campos['fecha_inicio'], campos['fecha_fin'])
+        cierre_historico = campos.get('fecha_fin_etapa_historica')
+        if imp['numero_tripulantes'] != 2 or cierre_historico is None:
+            causa = 'La pareja es distinta.' if set(posteriores) != set(roles) else 'Los miembros coinciden, pero sus roles son distintos.'
+            raise ConflictoError(causa + ' ' + _detalle_unidad(conexion, futura.id_unidad) + ' Para registrar una etapa histórica distinta, indica su fecha de finalización manual en Datos de la regata. No se cambió el equipo posterior.')
+        solapa = conexion.execute(text('''
+            SELECT DISTINCT u.id_unidad FROM public.unidad_competitiva u
+            JOIN public.forma_parte fp ON fp.id_unidad=u.id_unidad
+            WHERE u.id_clase=:clase AND fp.dni_deportista IN :dnis
+              AND u.fecha_inicio<=:cierre AND (u.fecha_fin IS NULL OR u.fecha_fin>=:inicio)
+        ''').bindparams(bindparam('dnis',expanding=True)),
+            {'clase':imp['id_clase'],'dnis':sorted(roles),'inicio':campos['fecha_inicio'],'cierre':cierre_historico}).first()
+        if solapa:
+            raise ConflictoError('El fin indicado para la etapa histórica (' + _fecha_aviso(cierre_historico) + ') solapa otra unidad. ' + _detalle_unidad(conexion, solapa[0]) + ' Elige una fecha anterior al inicio del siguiente equipo; no se guardó el lote.')
     unidad = conexion.execute(text('''
         INSERT INTO public.unidad_competitiva(fecha_inicio,fecha_fin,id_clase)
         VALUES (:inicio,:fin,:clase) RETURNING id_unidad
-    '''), {'inicio': campos['fecha_inicio'], 'fin': fin_vencido(limite), 'clase': imp['id_clase']}).scalar_one()
+    '''), {'inicio': campos['fecha_inicio'], 'fin': cierre_historico or fin_vencido(limite), 'clase': imp['id_clase']}).scalar_one()
     # Abierta hasta cierre manual o edad ya vencida. Nunca programar una fecha
     # final futura: el usuario puede terminar la unidad antes de ese límite.
     conexion.execute(text('INSERT INTO public.forma_parte(dni_deportista,id_unidad,rol) VALUES (:dni,:unidad,:rol)'),
@@ -225,14 +281,14 @@ def incorporar_en_conexion(conexion, identificador, filas, campos, version):
     for f in seleccionadas:
         problemas = incidencias(revision, f)
         if problemas:
-            raise ValidacionError(f'Puesto {f["posicion_general"]}: ' + ' '.join(problemas))
+            raise ValidacionError(contexto_fila(revision, f) + ': ' + ' '.join(problemas))
         if f['posicion_general'] in puestos:
-            raise ConflictoError('Hay dos filas con el mismo puesto general. Revisa la clasificación antes de incorporar.')
+            raise ConflictoError(contexto_fila(revision, f) + ': hay dos filas con el mismo puesto general. Revisa la clasificación antes de incorporar.')
         puestos.add(f['posicion_general'])
         miembros = miembros_fila(revision, f)
         dnis = {p['dni_deportista_confirmado'] for p in miembros}
         if documentos.intersection(dnis):
-            raise ConflictoError('Un deportista está confirmado en varias embarcaciones de la misma regata.')
+            raise ConflictoError(contexto_fila(revision, f) + ': un deportista está confirmado en varias embarcaciones de la misma regata. Revisa las vinculaciones de identidad.')
         documentos.update(dnis)
     co = _competicion(conexion, imp, campos)
     # El bloqueo de la competición serializa otros lotes de resultados.
@@ -253,16 +309,21 @@ def incorporar_en_conexion(conexion, identificador, filas, campos, version):
     for f in seleccionadas:
         miembros = miembros_fila(revision, f)
         dnis = [p['dni_deportista_confirmado'] for p in miembros]
-        unidad = _unidad(conexion, imp, campos, miembros,personas=[personas[d] for d in dnis if d in personas])
+        try:
+            unidad = _unidad(conexion, imp, campos, miembros,personas=[personas[d] for d in dnis if d in personas])
+        except (ValidacionError, ConflictoError) as error:
+            periodo = f"Regata: {_fecha_aviso(campos['fecha_inicio'])} a {_fecha_aviso(campos['fecha_fin'])}."
+            raise type(error)(contexto_fila(revision, f) + '. ' + periodo + ' ' + str(error) + ' No se guardó ninguna parte del lote.') from None
         previos = [p for p in anteriores if p['id_unidad']==unidad or p['posicion_general']==f['posicion_general']]
         if previos:
             igual = (len(previos) == 1 and previos[0]['id_unidad'] == unidad
                      and all(previos[0][k] == f[k] for k in ('posicion_general', 'posicion_categoria', 'puntos')))
             if not igual:
-                raise ConflictoError('Ya existe otro resultado para ese puesto o equipo. No se sobrescribió: revisa la clasificación.')
+                registrados = ' '.join(f"Registrado: puesto {p['posicion_general']}, {p['puntos']} puntos." for p in previos)
+                raise ConflictoError(contexto_fila(revision, f) + ': ya existe otro resultado para ese puesto o equipo. ' + registrados + f" Se intenta incorporar: {f['puntos']} puntos. No se guardó el lote.")
         else:
             if participantes_previos.intersection(dnis):
-                raise ConflictoError('Un deportista ya tiene un resultado con otro equipo en esta regata.')
+                raise ConflictoError(contexto_fila(revision, f) + ': un deportista ya tiene un resultado con otro equipo en esta regata. Revisa sus vinculaciones; no se guardó el lote.')
             conexion.execute(text('''INSERT INTO public.participa_en
                 (id_unidad,id_competicion,posicion_general,posicion_categoria,puntos)
                 VALUES (:unidad,:co,:posicion_general,:posicion_categoria,:puntos)

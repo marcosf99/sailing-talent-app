@@ -211,6 +211,177 @@ class RevisionLotes(unittest.TestCase):
         self.assertEqual(self.db.contar('deportista'),2)
         self.assertTrue(all(p['dni_deportista_confirmado'] is None for p in base.obtener_borrador(self.engine,self.ident)['participantes']))
 
+    def test_equipo_incompleto_identifica_companero_antes_de_crear_fichas(self):
+        r, decisiones = self.preparar_altas()
+        with self.engine.begin() as c:
+            c.exec_driver_sql('UPDATE clase SET numero_tripulantes=2 WHERE id_clase=1')
+            filas = c.exec_driver_sql('SELECT id_fila FROM fila_clasificacion_importada ORDER BY id_fila').scalars().all()
+            c.execute(text('UPDATE participante_importado SET id_fila=:f,orden_en_tripulacion=2 WHERE id_fila=:otra'),
+                      {'f':filas[0], 'otra':filas[1]})
+        r = self.resumen()
+        decisiones[0]['version'] = r['propuestas'][0]['version']
+        campos=dict(nombre='Vigo',fecha_inicio=date(2026,10,3),fecha_fin=date(2026,10,4),localidad='Vigo',tipo_clasificacion='definitiva')
+        with patch.object(individual, 'guardar_revision_en_conexion') as guardar:
+            with self.assertRaisesRegex(ValidacionError, 'Puesto 1:.*Úrsula Abad Montoro'):
+                s.crear_nuevos(self.engine,self.ident,decisiones[:1],r['version'],campos,confirmar=True)
+            guardar.assert_not_called()
+        self.assertEqual(self.db.contar('deportista'),2)
+
+    def test_prevision_dobles_admite_companero_confirmado_y_exige_roles_distintos(self):
+        contenido = {'importacion':{'numero_tripulantes':2}, 'filas':[
+            dict(id_fila=1,posicion_general=3,puntos=12,cumple_criterio=True,estado='pendiente')],
+            'participantes':[
+                dict(id_participante_importado=1,id_fila=1,nombre_original='Nuevo Uno',
+                     dni_deportista_confirmado=None,estado='pendiente',rol_propuesto='Patron'),
+                dict(id_participante_importado=2,id_fila=1,nombre_original='Existente Dos',
+                     dni_deportista_confirmado='D1',estado='vinculado',rol_propuesto='Tripulante')]}
+        decisiones=[dict(participante=1,campos={'rol_propuesto':'Patron'})]
+        self.assertEqual(s.incidencias_altas(contenido,decisiones),{})
+        decisiones[0]['campos']['rol_propuesto']='Tripulante'
+        self.assertIn('patrón y un tripulante',s.incidencias_altas(contenido,decisiones)[1])
+        self.assertIsNone(contenido['participantes'][0]['dni_deportista_confirmado'])
+
+    def preparar_dobles_mixtos(self):
+        event.listen(self.engine,'before_cursor_execute',lambda c,cu,q,p,ctx,m:(q.replace(' FOR UPDATE',''),p),retval=True)
+        with self.engine.begin() as c:
+            c.exec_driver_sql("INSERT INTO deportista(dni,nombre,apellidos,id_club) VALUES ('D3','Elena','Robles',1)")
+            c.exec_driver_sql("INSERT INTO unidad_competitiva VALUES (1,'2026-10-20',NULL,2)")
+            c.exec_driver_sql("INSERT INTO forma_parte VALUES ('D1',1,'Patron'),('D2',1,'Tripulante')")
+        filas=[{**self.db.filas[0], 'participantes':[
+            dict(nombre_original='Ana Pérez',rol_propuesto='Patron',id_club_identificado=1),
+            dict(nombre_original='Luis Lago',rol_propuesto='Tripulante',id_club_identificado=1)]},
+            {**self.db.filas[0],'numero_fila':2,'posicion_general':2,'participantes':[
+            dict(nombre_original='Elena Robles',rol_propuesto='Patron',id_club_identificado=1),
+            dict(nombre_original='Zacarías Velázquez Taboada',rol_propuesto='Tripulante',id_club_identificado=1)]}]
+        ident=self.db.crear(campos={**self.db.campos,'id_clase':2},filas=filas)
+        campos=dict(nombre='Vigo dobles anterior',fecha_inicio=date(2026,10,3),fecha_fin=date(2026,10,4),localidad='Vigo',tipo_clasificacion='definitiva')
+        r=self.resumen(ident)
+        decisiones=self.decisiones(r,roles=['Patron','Tripulante','Patron','Tripulante'])
+        return ident,campos,r,decisiones
+
+    def test_lote_dobles_vincula_pareja_pendiente_y_adelanta_equipo_completo(self):
+        ident,campos,r,decisiones=self.preparar_dobles_mixtos()
+        salida=s.confirmar_vinculos(self.engine,ident,decisiones,r['version'],confirmar=True,datos_resultado=campos)
+        self.assertEqual(salida['vinculados'],3)
+        self.assertEqual(salida['resultados_incorporados'],1)
+        self.assertEqual(salida['equipos_pendientes'],1)
+        self.assertEqual(self.db.contar('deportista'),3)
+        self.assertEqual(self.db.contar('unidad_competitiva'),1)
+        with self.engine.connect() as c:
+            self.assertEqual(c.exec_driver_sql('SELECT fecha_inicio FROM unidad_competitiva WHERE id_unidad=1').scalar_one(),'2026-10-03')
+        r=self.resumen(ident);p=r['propuestas'][0]
+        self.assertEqual(p['participante']['nombre_original'],'Zacarías Velázquez Taboada')
+        decision=dict(participante=p['participante']['id_participante_importado'],version=p['version'],campos=dict(
+            nombre='Zacarías',apellidos='Velázquez Taboada',id_club=1,rol_propuesto='Tripulante',fecha_nacimiento=None,sexo=None))
+        salida=s.crear_nuevos(self.engine,ident,[decision],r['version'],campos,confirmar=True)
+        self.assertEqual(salida,dict(creados=1,resultados_incorporados=1))
+        self.assertEqual(self.db.contar('participa_en'),2)
+        self.assertEqual(self.db.contar('unidad_competitiva'),2)
+
+    def test_solo_pareja_incompleta_guarda_vinculo_sin_inventar_resultado(self):
+        ident,campos,r,decisiones=self.preparar_dobles_mixtos()
+        salida=s.confirmar_vinculos(self.engine,ident,decisiones[2:],r['version'],confirmar=True,datos_resultado=campos)
+        self.assertEqual(salida['resultados_incorporados'],0)
+        self.assertEqual(salida['equipos_pendientes'],1)
+        self.assertEqual(self.db.contar('participa_en'),0)
+        b=base.obtener_borrador(self.engine,ident)
+        self.assertEqual([p['dni_deportista_confirmado'] for p in b['participantes']],[None,None,'D3',None])
+
+    def test_lote_anterior_no_adelanta_equipo_con_roles_distintos_y_revierte_vinculos(self):
+        ident,campos,r,decisiones=self.preparar_dobles_mixtos()
+        decisiones[0]['rol']='Tripulante'
+        decisiones[1]['rol']='Patron'
+        with self.assertRaises(ConflictoError):
+            s.confirmar_vinculos(self.engine,ident,decisiones,r['version'],confirmar=True,datos_resultado=campos)
+        b=base.obtener_borrador(self.engine,ident)
+        self.assertTrue(all(p['dni_deportista_confirmado'] is None for p in b['participantes']))
+        with self.engine.connect() as c:
+            self.assertEqual(c.exec_driver_sql('SELECT fecha_inicio FROM unidad_competitiva WHERE id_unidad=1').scalar_one(),'2026-10-20')
+        self.assertEqual(self.db.contar('participa_en'),0)
+
+    def test_lote_con_puntuacion_ausente_no_se_trata_como_pareja_pendiente(self):
+        ident,campos,r,decisiones=self.preparar_dobles_mixtos()
+        with self.engine.begin() as c:
+            c.execute(text('UPDATE fila_clasificacion_importada SET puntos=NULL WHERE id_importacion=:i AND numero_fila=2'),{'i':ident})
+        r=self.resumen(ident);decisiones=self.decisiones(r,roles=['Patron','Tripulante','Patron','Tripulante'])
+        with self.assertRaisesRegex(ValidacionError,'Puesto 2:.*puntuación'):
+            s.confirmar_vinculos(self.engine,ident,decisiones,r['version'],confirmar=True,datos_resultado=campos)
+        b=base.obtener_borrador(self.engine,ident)
+        self.assertTrue(all(p['dni_deportista_confirmado'] is None for p in b['participantes']))
+        self.assertEqual(self.db.contar('participa_en'),0)
+
+    def test_familiares_del_lote_necesitan_confirmacion_y_se_crean_distintos(self):
+        event.listen(self.engine,'before_cursor_execute',lambda c,cu,q,p,ctx,m:(q.replace(' FOR UPDATE',''),p),retval=True)
+        r,decisiones=self.preparar_altas(('Lucas Montoya Porland','Nicolas Montoya Porland'))
+        contenido=base.obtener_borrador(self.engine,self.ident)
+        pares=s.similitudes_altas(contenido,decisiones)
+        self.assertEqual(pares,[{'Participante':'Nicolas Montoya Porland','Otra alta del lote':'Lucas Montoya Porland'}])
+        campos=dict(nombre='Vigo nuevas',fecha_inicio=date(2026,10,3),fecha_fin=date(2026,10,4),localidad='Vigo',tipo_clasificacion='definitiva')
+        with self.assertRaisesRegex(ConflictoError,'Nicolas.*Lucas'):
+            s.crear_nuevos(self.engine,self.ident,decisiones,r['version'],campos,confirmar=True)
+        self.assertEqual(self.db.contar('deportista'),2)
+        for d in decisiones:d['confirmar_distinto_lote']=True
+        salida=s.crear_nuevos(self.engine,self.ident,decisiones,r['version'],campos,confirmar=True)
+        self.assertEqual(salida,dict(creados=2,resultados_incorporados=2))
+        self.assertEqual(self.db.contar('deportista'),4)
+        b=base.obtener_borrador(self.engine,self.ident)
+        self.assertEqual(len({p['dni_deportista_confirmado'] for p in b['participantes']}),2)
+
+    def test_confirmacion_del_lote_no_salta_fichas_previas_ni_nombre_duplicado(self):
+        campos=dict(nombre='Vigo nuevas',fecha_inicio=date(2026,10,3),fecha_fin=date(2026,10,4),localidad='Vigo',tipo_clasificacion='definitiva')
+        for nombres in [('Zacarías Velázquez Taboada','Ana Pérez'),('Lucas Montoya Porland','Lucas Montoya Porland')]:
+            r,decisiones=self.preparar_altas(nombres)
+            for d in decisiones:d['confirmar_distinto_lote']=True
+            with self.assertRaises(ConflictoError):
+                s.crear_nuevos(self.engine,self.ident,decisiones,r['version'],campos,confirmar=True)
+            self.assertEqual(self.db.contar('deportista'),2)
+
+    def test_alta_con_pareja_anterior_cierre_manual_preserva_equipo_y_resultado_posteriores(self):
+        ident,campos,r,decisiones=self.preparar_dobles_mixtos()
+        with self.engine.begin() as c:
+            c.exec_driver_sql("DELETE FROM forma_parte WHERE id_unidad=1 AND dni_deportista='D1'")
+            c.exec_driver_sql("INSERT INTO forma_parte VALUES ('D3',1,'Patron')")
+            c.exec_driver_sql("INSERT INTO competicion(id_competicion,nombre,fecha_inicio,fecha_fin,nivel,id_clase) VALUES (2,'Posterior','2026-10-20','2026-10-21','Nacional',2)")
+            c.exec_driver_sql("INSERT INTO participa_en VALUES (1,2,1,NULL,12)")
+        s.confirmar_vinculos(self.engine,ident,decisiones[2:],r['version'],confirmar=True,datos_resultado=campos)
+        r=self.resumen(ident)
+        p=next(x for x in r['propuestas'] if x['participante']['nombre_original']=='Zacarías Velázquez Taboada')
+        alta=dict(participante=p['participante']['id_participante_importado'],version=p['version'],campos=dict(
+            nombre='Zacarías',apellidos='Velázquez Taboada',id_club=1,rol_propuesto='Tripulante',fecha_nacimiento=None,sexo=None))
+        with self.assertRaisesRegex(ConflictoError,'etapa histórica') as error:
+            s.crear_nuevos(self.engine,ident,[alta],r['version'],campos,confirmar=True)
+        mensaje=str(error.exception)
+        for esperado in ('Puesto 2', 'Elena Robles', 'Zacarías Velázquez Taboada', 'Luis Lago',
+                         'La pareja es distinta', '03/10/2026', '04/10/2026', '20/10/2026',
+                         'sin cierre', 'No se guardó ninguna parte del lote'):
+            self.assertIn(esperado,mensaje)
+        self.assertNotIn('TEMP-',mensaje)
+        self.assertNotIn('D3',mensaje)
+        self.assertEqual(self.db.contar('deportista'),3)
+        for cierre in (date(2026,10,20),date(2026,10,21)):
+            with self.assertRaisesRegex(ConflictoError,'solapa'):
+                s.crear_nuevos(self.engine,ident,[alta],r['version'],{**campos,'fecha_fin_etapa_historica':cierre},confirmar=True)
+            self.assertEqual(self.db.contar('deportista'),3)
+        salida=s.crear_nuevos(self.engine,ident,[alta],r['version'],{**campos,'fecha_fin_etapa_historica':date(2026,10,4)},confirmar=True)
+        self.assertEqual(salida,dict(creados=1,resultados_incorporados=1))
+        with self.engine.connect() as c:
+            self.assertEqual(c.exec_driver_sql('SELECT fecha_inicio,fecha_fin FROM unidad_competitiva WHERE id_unidad=1').one(),('2026-10-20',None))
+            self.assertEqual(c.exec_driver_sql('SELECT dni_deportista,rol FROM forma_parte WHERE id_unidad=1 ORDER BY dni_deportista').all(),[('D2','Tripulante'),('D3','Patron')])
+            self.assertEqual(c.exec_driver_sql('SELECT fecha_inicio,fecha_fin FROM unidad_competitiva WHERE id_unidad<>1').one(),('2026-10-03','2026-10-04'))
+            self.assertEqual(c.exec_driver_sql('SELECT posicion_general,puntos FROM participa_en WHERE id_competicion=2').one(),(1,12))
+        self.assertEqual(self.db.contar('participa_en'),2)
+
+    def test_error_de_alta_indica_persona_puesto_y_campo_invalido(self):
+        r,decisiones=self.preparar_altas()
+        decisiones[1]['campos']['nombre']=''
+        campos=dict(nombre='Vigo',fecha_inicio=date(2026,10,3),fecha_fin=date(2026,10,4),localidad='Vigo',tipo_clasificacion='definitiva')
+        with self.assertRaises(ValidacionError) as error:
+            s.crear_nuevos(self.engine,self.ident,decisiones,r['version'],campos,confirmar=True)
+        mensaje=str(error.exception)
+        for texto in ('Puesto 2','Úrsula Abad Montoro','nombre','No se creó ninguna ficha'):
+            self.assertIn(texto,mensaje)
+        self.assertEqual(self.db.contar('deportista'),2)
+
     def test_consentimiento_y_seleccion_explicitos(self):
         r=self.resumen()
         with self.assertRaises(ValidacionError):s.confirmar_vinculos(self.engine,self.ident,self.decisiones(r),r['version'])
