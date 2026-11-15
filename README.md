@@ -335,11 +335,16 @@ si sus demas metadatos coinciden. No sobrescribe competiciones ni resultados
 incompatibles. Se bloquean importacion, clase, competicion, deportistas y unidades
 reutilizadas, y se comprueba la version de la revision mostrada al usuario.
 
-Se reutiliza un equipo con los mismos miembros y roles que cubra toda la regata.
-Si no existe y no hay solapamientos incompatibles, se crea una unidad con inicio
-en la fecha de inicio de la regata y `fecha_fin = NULL`. Las regatas sucesivas
-pueden reutilizarla. Tambien se comprueba que la nueva unidad abierta no solape
-un equipo posterior, aunque este empiece despues de la regata importada.
+Se reutiliza una unidad de los mismos miembros y roles que cubra toda la regata.
+Si la unidad comienza despues, se puede adelantar su inicio conservando su cierre
+manual y sus resultados. Si no existe un equipo compatible, se crea otra unidad
+con inicio en la regata y `fecha_fin = NULL`.
+Un regatista puede tener varias unidades abiertas de la misma clase con distintas
+parejas o roles. No se cierran por cambiar de pareja ni por importar otra regata.
+Las etapas cerradas se conservan y no se fusionan automaticamente. Si hay varias
+unidades del mismo equipo que cubren la regata, se solicita revision de duplicados.
+La antigua opcion de cierre de etapas historicas en la carga ya no es necesaria;
+los cierres se gestionan desde **Unidades competitivas**.
 En clases individuales el rol es Patron. En dobles hacen falta ambos miembros
 confirmados, con un Patron y un Tripulante.
 
@@ -621,3 +626,20 @@ Las altas nuevas reutilizan el catálogo dentro de su transacción y lo amplían
 tras cada alta para seguir detectando duplicados dentro del propio lote.
 Se conservan los controles de versiones, roles, nacimiento, edad, puestos,
 equipos y reversión completa ante conflictos. No requiere migraciones.
+
+### Catalogo ampliado de clubes nacionales
+
+`sql/sample_clubes_nacionales.sql` añade 13 clubes españoles observados en las
+clasificaciones, conserva As Pontes si ya existe y registra 84 equivalencias de
+nombres. Añade la Federacion Vasca de Vela para sus clubes. Se ejecuta despues de
+`sample_data.sql`, `sample_clubes_galicia.sql` y la migracion 001; es repetible y
+no sobrescribe clubes ni alias previos. Fuentes en `docs/fuentes_clubes_nacionales.md`.
+
+```sql
+\i sql/sample_clubes_nacionales.sql
+```
+
+En cargas nuevas, el nombre canonico exacto o un alias global confirmado identifica
+el club automaticamente, manteniendo el texto original. No se vinculan deportistas
+por esta decision. Los nombres duplicados, alias contextuales y siglas ambiguas
+siguen requiriendo revision. Los borradores anteriores conservan sus decisiones.

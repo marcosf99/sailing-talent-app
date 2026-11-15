@@ -65,6 +65,17 @@ class PruebasUnidades(unittest.TestCase):
         ident=s.crear_unidad(self.engine,self.campos)
         s.finalizar_unidad(self.engine,ident,date(2026,3,1))
         with self.assertRaises(s.ConflictoError):s.crear_unidad(self.engine,{**self.campos,'fecha_inicio':date(2025,1,1)})
+    def test_parejas_y_roles_simultaneos_se_cierran_independientemente(self):
+        a=s.crear_unidad(self.engine,{**self.campos,'id_clase':2,'tripulante':'D2'})
+        b=s.crear_unidad(self.engine,{**self.campos,'id_clase':2,'tripulante':'D3'})
+        c=s.crear_unidad(self.engine,{**self.campos,'id_clase':2,'patron':'D2','tripulante':'D1'})
+        self.assertEqual(len({a,b,c}),3)
+        self.assertTrue(all(u['fecha_fin'] is None for u in self.consulta('SELECT * FROM unidad_competitiva')))
+        s.finalizar_unidad(self.engine,b,date(2026,5,1))
+        self.assertEqual(sum(u['fecha_fin'] is None for u in self.consulta('SELECT * FROM unidad_competitiva')),2)
+        with self.assertRaises(s.ConflictoError):
+            s.crear_unidad(self.engine,{**self.campos,'id_clase':2,'tripulante':'D2'})
+
     def test_finalizar_conserva_miembros_y_resultados(self):
         ident=s.crear_unidad(self.engine,self.campos)
         with self.engine.begin() as c:

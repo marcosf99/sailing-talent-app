@@ -344,8 +344,5 @@ st.session_state['campos_prueba']=campos
 """
         at=AppTest.from_string(guion).run()
         self.assertNotIn('fecha_fin_etapa_historica',at.session_state['campos_prueba'])
-        next(c for c in at.checkbox if c.label=='Registrar una etapa histórica con otra pareja o roles').check().run()
-        self.assertIsNone(at.session_state['campos_prueba']['fecha_fin_etapa_historica'])
-        next(d for d in at.date_input if d.label=='Finalización manual de la etapa histórica').set_value(date(2026,4,4)).run()
-        self.assertEqual(at.session_state['campos_prueba']['fecha_fin_etapa_historica'],date(2026,4,4))
+        self.assertFalse(any('etapa histórica' in c.label for c in at.checkbox))
         self.assertEqual(len(at.exception),0)

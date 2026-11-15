@@ -56,19 +56,19 @@ def crear_unidad(engine, campos):
                 if persona["fecha_nacimiento"] and inicio < persona["fecha_nacimiento"]:
                     raise ValidacionError("La unidad no puede comenzar antes del nacimiento de sus miembros.")
             limite = validar_edad(fila['nombre'], personas, inicio)
-            # La nueva unidad no tiene fecha final: cualquier unidad de la misma
-            # clase que termine después del inicio produce solapamiento.
-            filtro_limite = ' AND u.fecha_inicio<=:limite' if limite else ''
-            consulta = text("""
-                SELECT fp.dni_deportista, u.id_unidad
-                FROM public.forma_parte fp
-                JOIN public.unidad_competitiva u ON u.id_unidad=fp.id_unidad
-                WHERE fp.dni_deportista IN :documentos AND u.id_clase=:clase
-                  AND (u.fecha_fin IS NULL OR u.fecha_fin>=:inicio)
-            """ + filtro_limite).bindparams(bindparam("documentos", expanding=True))
-            conflicto = conexion.execute(consulta, {"documentos": miembros, "clase": clase, "inicio": inicio, "limite": limite}).first()
-            if conflicto:
-                raise ConflictoError("Algún miembro ya pertenece a una unidad de esta clase con fechas solapadas. Finaliza la anterior o revisa la fecha de inicio.")
+            # Se permiten parejas o roles simultáneos; se rechaza únicamente
+            # duplicar el mismo equipo en un intervalo ya cubierto.
+            existentes = conexion.execute(text("""
+                SELECT u.id_unidad,fp.dni_deportista,fp.rol
+                FROM public.unidad_competitiva u JOIN public.forma_parte fp ON fp.id_unidad=u.id_unidad
+                WHERE u.id_clase=:clase AND (u.fecha_fin IS NULL OR u.fecha_fin>=:inicio)
+            """),{'clase':clase,'inicio':inicio}).mappings().all()
+            equipos = {}
+            for e in existentes:
+                equipos.setdefault(e['id_unidad'],{})[e['dni_deportista']] = e['rol']
+            roles = {patron:'Patron', **({tripulante:'Tripulante'} if tripulante else {})}
+            if roles in equipos.values():
+                raise ConflictoError('Ya existe una unidad del mismo equipo y roles con fechas compatibles. Utiliza esa unidad o revisa sus fechas antes de crear otra.')
             identificador = conexion.execute(text("""
                 INSERT INTO public.unidad_competitiva (fecha_inicio, fecha_fin, id_clase)
                 VALUES (:inicio, :fin, :clase) RETURNING id_unidad

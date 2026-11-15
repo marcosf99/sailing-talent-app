@@ -128,14 +128,13 @@ class ResultadosImportados(unittest.TestCase):
         with self.engine.connect() as c:
             self.assertIsNone(c.execute(text('SELECT fecha_fin FROM unidad_competitiva')).scalar_one())
 
-    def test_solapamiento_incompatible_revierte_competicion_y_resultados(self):
+    def test_roles_distintos_pueden_coexistir_sin_modificar_otro_equipo(self):
         with self.engine.begin() as c:
             c.exec_driver_sql("INSERT INTO unidad_competitiva VALUES (1,'2026-10-04',NULL,1)")
             c.exec_driver_sql("INSERT INTO forma_parte VALUES ('D1',1,'Tripulante')")
-        self.confirmar()
-        with self.assertRaises(ConflictoError): self.aplicar()
-        self.assertEqual(self.contar('competicion'), 1)
-        self.assertIsNone(self.contenido()['importacion']['id_competicion'])
+        self.confirmar();self.aplicar()
+        self.assertEqual(self.contar('unidad_competitiva'),2)
+        self.assertEqual(self.contar('participa_en'),1)
 
     def test_puestos_duplicados_bloqueados_tambien_en_lotes_distintos(self):
         self.confirmar();self.aplicar()
@@ -321,15 +320,13 @@ class ResultadosImportados(unittest.TestCase):
         with self.engine.connect() as c:
             self.assertEqual(c.exec_driver_sql('SELECT fecha_inicio,fecha_fin FROM unidad_competitiva').one(),('2026-09-26',None))
 
-    def test_adelanto_no_fusiona_etapa_anterior_cerrada(self):
+    def test_adelanto_conserva_etapa_cerrada_de_otros_roles(self):
         with self.engine.begin() as c:
             c.exec_driver_sql("INSERT INTO unidad_competitiva VALUES (1,'2026-10-20',NULL,1),(2,'2026-10-05','2026-10-10',1)")
             c.exec_driver_sql("INSERT INTO forma_parte VALUES ('D1',1,'Patron'),('D1',2,'Tripulante')")
-        self.confirmar()
-        with self.assertRaises(ConflictoError):self.aplicar()
-        self.assertEqual(self.contar('participa_en'),0)
+        self.confirmar();self.aplicar()
         with self.engine.connect() as c:
-            self.assertEqual(c.exec_driver_sql('SELECT fecha_inicio FROM unidad_competitiva WHERE id_unidad=1').scalar_one(),'2026-10-20')
+            self.assertEqual(c.exec_driver_sql('SELECT fecha_inicio,fecha_fin FROM unidad_competitiva ORDER BY id_unidad').all(),[('2026-10-03',None),('2026-10-05','2026-10-10')])
 
     def test_adelanto_conserva_cierre_de_la_etapa_mas_cercana(self):
         with self.engine.begin() as c:
@@ -340,18 +337,18 @@ class ResultadosImportados(unittest.TestCase):
             self.assertEqual(c.exec_driver_sql('SELECT fecha_inicio,fecha_fin FROM unidad_competitiva WHERE id_unidad=2').one(),('2026-10-03','2026-10-10'))
             self.assertEqual(c.exec_driver_sql('SELECT fecha_inicio FROM unidad_competitiva WHERE id_unidad=1').scalar_one(),'2026-10-20')
 
-    def test_equipo_posterior_con_otro_rol_no_se_adelanta(self):
+    def test_otro_rol_crea_unidad_independiente_abierta(self):
         with self.engine.begin() as c:
             c.exec_driver_sql("INSERT INTO unidad_competitiva VALUES (1,'2026-10-20',NULL,1)")
             c.exec_driver_sql("INSERT INTO forma_parte VALUES ('D1',1,'Tripulante')")
-        self.confirmar()
-        with self.assertRaises(ConflictoError):self.aplicar()
-        self.assertEqual(self.contar('participa_en'),0)
+        self.confirmar();self.aplicar()
+        with self.engine.connect() as c:
+            self.assertEqual(c.exec_driver_sql('SELECT fecha_inicio,fecha_fin FROM unidad_competitiva ORDER BY id_unidad').all(),[('2026-10-20',None),('2026-10-03',None)])
 
-    def test_fin_historico_exige_fecha_manual_pasada_que_cubra_la_regata(self):
-        for cierre in (None,'2026-10-04',date(2026,10,3),date(2999,1,1)):
-            with self.subTest(cierre=cierre), self.assertRaises(ValidacionError):
-                s._metadatos({**self.campos,'fecha_fin_etapa_historica':cierre})
+    def test_parametro_historico_antiguo_no_programa_cierres(self):
+        self.confirmar();self.aplicar(campos={**self.campos,'fecha_fin_etapa_historica':date(2026,10,4)})
+        with self.engine.connect() as c:
+            self.assertIsNone(c.exec_driver_sql('SELECT fecha_fin FROM unidad_competitiva').scalar_one())
 
     def test_cierre_historico_no_cierra_mismo_equipo_ni_equipo_sin_etapa_posterior(self):
         self.confirmar()
@@ -365,18 +362,13 @@ class ResultadosImportados(unittest.TestCase):
             self.assertEqual(c.exec_driver_sql('SELECT fecha_inicio,fecha_fin FROM unidad_competitiva').one(),('2026-09-01',None))
         self.assertEqual(self.contar('unidad_competitiva'),1)
 
-    def test_error_roles_posteriores_detalla_equipo_regata_y_fecha_sin_documentos(self):
+    def test_varias_unidades_identicas_requieren_revision(self):
         with self.engine.begin() as c:
-            c.exec_driver_sql("INSERT INTO unidad_competitiva VALUES (1,'2026-10-20',NULL,1)")
-            c.exec_driver_sql("INSERT INTO forma_parte VALUES ('D1',1,'Tripulante')")
+            c.exec_driver_sql("INSERT INTO unidad_competitiva VALUES (1,'2026-01-01',NULL,1),(2,'2026-02-01',NULL,1)")
+            c.exec_driver_sql("INSERT INTO forma_parte VALUES ('D1',1,'Patron'),('D1',2,'Patron')")
         self.confirmar()
-        with self.assertRaises(ConflictoError) as error:
-            self.aplicar()
-        mensaje=str(error.exception)
-        for texto in ('Puesto 1','Ana Pérez','patrón','tripulante','roles son distintos',
-                      '03/10/2026','04/10/2026','20/10/2026','sin cierre','No se guardó ninguna parte del lote'):
-            self.assertIn(texto,mensaje)
-        self.assertNotIn('D1',mensaje)
+        with self.assertRaisesRegex(ConflictoError,'varias unidades del mismo equipo') as error:self.aplicar()
+        self.assertIn('Ana Pérez',str(error.exception))
         self.assertEqual(self.contar('participa_en'),0)
 
     def test_error_cierre_no_cubre_regata_indica_ambas_fechas(self):

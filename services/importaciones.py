@@ -281,7 +281,24 @@ def _guardar_filas(conexion, imp, filas):
     if datos.listar_filas(conexion, imp['id_importacion']):
         raise ConflictoError("La importación ya tiene filas. No se sobrescribe una revisión existente.")
     preparadas = preparar_filas(filas, imp['nivel'], imp['numero_tripulantes'])
+    # Solo equivalencias persistentes confirmadas o nombre canónico exacto.
+    # Las abreviaturas ambiguas siguen necesitando decisión del usuario.
+    from services.revision_participantes import normalizar
+    clubes = datos.clubes_revision(conexion)
+    aliases = datos.aliases_revision(conexion)
+    nombres = {}
+    for club in clubes:
+        nombres.setdefault(normalizar(club['nombre']), set()).add(club['id_club'])
+    equivalencias = {}
+    for alias in aliases:
+        equivalencias.setdefault(alias['texto_normalizado'], set()).add(alias['id_club'])
     for item in preparadas:
+        for p in item['participantes']:
+            if p.get('id_club_identificado') is None:
+                normal = normalizar(p.get('club_original'))
+                opciones = equivalencias.get(normal, nombres.get(normal, set()))
+                if len(opciones) == 1:
+                    p['id_club_identificado'] = next(iter(opciones))
         fila = dict(item['fila'], id_importacion=imp['id_importacion'])
         id_fila = datos.insertar(conexion, 'fila_clasificacion_importada', fila)
         for participante in item['participantes']:

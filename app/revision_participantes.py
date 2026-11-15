@@ -47,16 +47,6 @@ def _campos_regata(imp, prefijo, disabled=False):
                         format_func=lambda t: {'sin_confirmar': 'Sin confirmar', 'provisional': 'Provisional', 'definitiva': 'Definitiva'}[t],
                         key=prefijo + 'tipo', disabled=disabled)
     campos = dict(nombre=nombre, fecha_inicio=inicio, fecha_fin=fin, localidad=localidad, tipo_clasificacion=tipo)
-    if imp.get('numero_tripulantes') == 2:
-        historica = st.checkbox('Registrar una etapa histórica con otra pareja o roles',
-                                key=prefijo+'historica', disabled=disabled)
-        if historica:
-            st.caption('Solo se aplica a los equipos seleccionados que tengan una unidad posterior distinta. '
-                       'Indica cuándo terminó esta etapa anterior; no se modifica el equipo posterior. '
-                       'Si varias etapas necesitan fechas distintas, guárdalas por separado. '
-                       'En los equipos sin conflicto las unidades seguirán abiertas.')
-            campos['fecha_fin_etapa_historica'] = st.date_input('Finalización manual de la etapa histórica',
-                value=None, key=prefijo+'fin_historica', disabled=disabled)
     return campos
 
 
