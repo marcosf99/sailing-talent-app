@@ -149,6 +149,8 @@ def _participantes(proveedor, identificador, resumen, tripulantes, clubes, prefi
                    'Después podrás crear o vincular al otro miembro. Los conflictos de identidad, roles o resultados revierten el lote.')
     else:
         st.caption('Este paso vincula identidades y prepara los resultados para su incorporación posterior.')
+    recordar = st.checkbox('Recordar los nombres seleccionados como variantes de sus fichas', key=prefijo+'_recordar_nombres')
+    st.caption('Si marcas esta opción, confirma también el club de la fuente de cada participante seleccionado.')
     confirmar = st.checkbox('Confirmo que cada ficha seleccionada corresponde al participante de su fila.', key=prefijo+'_confirmar_vinculos')
     if incorporar:
         confirmar = st.checkbox('He revisado los datos de la regata, puestos y puntos del lote.', key=prefijo+'_confirmar_resultados') and confirmar
@@ -167,7 +169,7 @@ def _participantes(proveedor, identificador, resumen, tripulantes, clubes, prefi
                 st.error('Confirma el rol de los miembros seleccionados antes de guardar.')
                 return
             decisiones.append(dict(participante=int(ident), dni=ficha['dni'],
-                version_ficha=ficha['version_ficha'], rol=rol))
+                version_ficha=ficha['version_ficha'], rol=rol, **({'recordar_nombre':True} if recordar else {})))
         _guardar(proveedor, 'vinculos_resultados' if incorporar else 'vinculos', identificador, decisiones,
                  resumen['version'], al_guardar, datos_regata if incorporar else None)
 

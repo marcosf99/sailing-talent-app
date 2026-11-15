@@ -643,3 +643,22 @@ En cargas nuevas, el nombre canonico exacto o un alias global confirmado identif
 el club automaticamente, manteniendo el texto original. No se vinculan deportistas
 por esta decision. Los nombres duplicados, alias contextuales y siglas ambiguas
 siguen requiriendo revision. Los borradores anteriores conservan sus decisiones.
+
+### Memoria de nombres y coincidencias descartadas
+
+La revisión permite recordar variantes de nombre confirmadas y descartar fichas
+que correspondan a otras personas, siempre limitando la decisión al nombre y al
+club de la fuente. Las opciones son explícitas y desmarcadas inicialmente.
+Las futuras cargas reutilizan esas decisiones para preparar sus propuestas, sin
+vincular personas automáticamente. Se pueden consultar y olvidar desde la revisión
+individual. No se modifica el nombre oficial ni se reinterpretan resultados anteriores.
+
+Antes de usar esta versión, ejecutar en ambas bases:
+
+```sql
+\i sql/migrations/002_memoria_nombres.sql
+```
+
+Las tablas nuevas y sus relaciones están descritas en
+`docs/memoria_nombres.md`. La actualización del DNI conserva la memoria mediante
+claves foráneas con `ON UPDATE CASCADE`.
