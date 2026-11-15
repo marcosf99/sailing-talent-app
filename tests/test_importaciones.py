@@ -22,7 +22,16 @@ class CriteriosSeleccion(unittest.TestCase):
     def test_cortes_y_empates(self):
         for nivel, corte in [('Autonomico', 40), ('Nacional', 80)]:
             for posicion, esperado in [(1, True), (corte, True), (corte, True), (corte + 1, False)]:
-                self.assertIs(s.evaluar_seleccion(nivel, posicion)['cumple_criterio'], esperado)
+                self.assertIs(s.evaluar_seleccion(nivel, posicion, 'ESP 123')['cumple_criterio'], esperado)
+
+    def test_extranjeros_no_entran_en_cortes_nacionales_o_autonomicos(self):
+        for nivel in ['Autonomico', 'Nacional', 'Internacional']:
+            for vela in ['BRA 57503', 'POR 57613', 'TUR 57674', 'POL 56676']:
+                with self.subTest(nivel=nivel, vela=vela):
+                    self.assertIs(s.evaluar_seleccion(nivel, 1, vela)['cumple_criterio'], False)
+            self.assertIsNone(s.evaluar_seleccion(nivel, 1)['cumple_criterio'])
+            self.assertIsNone(s.evaluar_seleccion(nivel, 1, '1234')['cumple_criterio'])
+            self.assertEqual(s.criterio_inclusion(nivel)['codigo_pais_vela'], 'ESP')
 
     def test_internacional_numero_vela_no_nacionalidad(self):
         for vela in ['ESP 123', 'esp123', 'ESP-123', '123 ESP']:

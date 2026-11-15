@@ -175,8 +175,9 @@ def mostrar(proveedor, motor, lectura):
     if nivel is None:
         st.info('Selecciona el nivel para aplicar el criterio de incorporación.')
         return
-    if nivel == 'Internacional' and mapeo.get('numero_vela_original') is None:
-        st.error('Para una competición internacional debes seleccionar la columna del número de vela.')
+    st.caption('Solo embarcaciones ESP. Autonómicas: hasta el puesto 40; nacionales: hasta el 80; internacionales: todas las ESP. Se conservan los puestos originales.')
+    if mapeo.get('numero_vela_original') is None:
+        st.error('Selecciona la columna del número de vela para identificar las embarcaciones ESP.')
         return
     try:
         filas = extractor.mapear_filas(resultado, mapeo, modo)

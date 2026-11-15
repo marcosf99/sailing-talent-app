@@ -230,8 +230,8 @@ class RevisionLotes(unittest.TestCase):
         self.assertEqual(self.db.contar('deportista'),2)
 
     def test_prevision_dobles_admite_companero_confirmado_y_exige_roles_distintos(self):
-        contenido = {'importacion':{'numero_tripulantes':2}, 'filas':[
-            dict(id_fila=1,posicion_general=3,puntos=12,cumple_criterio=True,estado='pendiente')],
+        contenido = {'importacion':{'numero_tripulantes':2,'nivel':'Nacional'}, 'filas':[
+            dict(id_fila=1,posicion_general=3,puntos=12,numero_vela_original='ESP 123',cumple_criterio=True,estado='pendiente')],
             'participantes':[
                 dict(id_participante_importado=1,id_fila=1,nombre_original='Nuevo Uno',
                      dni_deportista_confirmado=None,estado='pendiente',rol_propuesto='Patron'),

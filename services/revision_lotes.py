@@ -27,7 +27,9 @@ def _contenido(c, identificador, bloquear=False):
 
 def _pendientes(contenido):
     filas = {f['id_fila']: f for f in contenido['filas']
-             if f['cumple_criterio'] is True and f['estado'] not in ('importada', 'excluida')}
+             if f['cumple_criterio'] is True and f['estado'] not in ('importada', 'excluida')
+             and base.evaluar_seleccion(contenido['importacion']['nivel'], f['posicion_general'],
+                                       f['numero_vela_original'])['cumple_criterio'] is True}
     return [{**p, 'fila': filas[p['id_fila']]} for p in contenido['participantes']
             if p['id_fila'] in filas and not p['dni_deportista_confirmado']]
 

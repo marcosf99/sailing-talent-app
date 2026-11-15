@@ -98,9 +98,9 @@ def calcular_huella(contenido):
 
 def criterio_inclusion(nivel):
     nivel = _nivel(nivel)
-    return {"version": 1, "nivel": nivel, "incluir_empates": True,
+    return {"version": 2, "nivel": nivel, "incluir_empates": True,
             "posicion_maxima": {"Autonomico": 40, "Nacional": 80}.get(nivel),
-            "codigo_pais_vela": "ESP" if nivel == "Internacional" else None}
+            "codigo_pais_vela": "ESP"}
 
 
 def evaluar_seleccion(nivel, posicion_general=None, numero_vela=None):
@@ -112,18 +112,23 @@ def evaluar_seleccion(nivel, posicion_general=None, numero_vela=None):
     nivel = _nivel(nivel)
     posicion = _entero(posicion_general, "posicion_general", opcional=True)
     vela = _texto(numero_vela, "numero_vela", 100)
-    if nivel == "Internacional":
-        if vela is None:
-            return {"cumple_criterio": None, "motivo_seleccion": "Falta el número de vela para comprobar ESP."}
-        esp = re.search(r"(?<![A-Z])ESP(?![A-Z])", vela.upper()) is not None
-        return {"cumple_criterio": esp, "motivo_seleccion":
-                "ESP en el número de vela: se selecciona toda la tripulación." if esp
-                else "El número de vela no contiene el código ESP."}
-    if posicion is None:
+    if nivel != "Internacional" and posicion is None:
         return {"cumple_criterio": None, "motivo_seleccion": "Falta confirmar la posición general."}
     corte = 40 if nivel == "Autonomico" else 80
-    return {"cumple_criterio": posicion <= corte,
-            "motivo_seleccion": f"Posición {posicion}; corte hasta {corte}, incluidos los empates."}
+    if nivel != "Internacional" and posicion > corte:
+        return {"cumple_criterio": False, "motivo_seleccion": f"Posición {posicion}; fuera del corte hasta {corte}."}
+    if vela is None:
+        return {"cumple_criterio": None, "motivo_seleccion": "Falta el número de vela para comprobar ESP."}
+    esp = re.search(r"(?<![A-Z])ESP(?![A-Z])", vela.upper()) is not None
+    if not esp:
+        # Sin código reconocible, conservar para revisión; nunca dar un alta.
+        pais = re.search(r"(?<![A-Z])[A-Z]{3}(?![A-Z])", vela.upper())
+        return {"cumple_criterio": False if pais else None,
+                "motivo_seleccion": "El número de vela no contiene el código ESP."}
+    if nivel == "Internacional":
+        return {"cumple_criterio": True, "motivo_seleccion": "ESP en el número de vela: se selecciona toda la tripulación."}
+    return {"cumple_criterio": True,
+            "motivo_seleccion": f"ESP; posición {posicion}; corte hasta {corte}, incluidos los empates."}
 
 
 def validar_importacion(campos):
@@ -354,11 +359,14 @@ def _bloquear_participante(conexion, identificador):
     p = datos.contexto_participante(conexion, identificador)
     if p is None:
         raise ValidacionError("El participante no existe.")
-    _editable(conexion, p['id_importacion'])
+    imp = _editable(conexion, p['id_importacion'])
     # Volver a leer después del bloqueo para no trabajar con una identidad antigua.
     p = datos.contexto_participante(conexion, identificador)
     if p is None or p['estado_fila'] in ('importada', 'excluida') or not p['cumple_criterio']:
         raise ValidacionError("Solo se pueden revisar participantes de filas seleccionadas y pendientes.")
+    seleccion = evaluar_seleccion(imp['nivel'], p['posicion_general'], p['numero_vela_original'])
+    if seleccion['cumple_criterio'] is not True:
+        raise ValidacionError(seleccion['motivo_seleccion'])
     return p
 
 

@@ -131,7 +131,8 @@ def listar_coincidencias(conexion, identificador):
 
 def contexto_participante(conexion, identificador):
     r = conexion.execute(text("""
-        SELECT p.*, f.id_importacion, f.cumple_criterio,
+        SELECT p.*, f.id_importacion, f.cumple_criterio, f.posicion_general,
+               f.numero_vela_original,
                f.estado AS estado_fila
         FROM public.participante_importado p
         JOIN public.fila_clasificacion_importada f ON f.id_fila=p.id_fila

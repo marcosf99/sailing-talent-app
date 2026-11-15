@@ -280,20 +280,26 @@ def _mostrar(proveedor, motor, lectura, pantalla):
     por_club = {c['id_club']: c for c in clubes}
     por_federacion = {f['id_federacion']: f for f in federaciones}
     original_club = p['id_club_identificado'] if p['id_club_identificado'] in por_club else None
-    original_fed = por_club[original_club]['id_federacion'] if original_club is not None else None
-    opciones_fed = [None] + list(por_federacion)
-    federacion = st.selectbox('Federación para localizar el club de la fuente', opciones_fed,
-                              index=opciones_fed.index(original_fed), key=prefijo + 'federacion', disabled=not editable,
-                              format_func=lambda i: 'Todas las federaciones' if i is None else por_federacion[i]['nombre'])
-    filtrados = [None] + [i for i, c in por_club.items() if federacion is None or c['id_federacion'] == federacion]
-    clave_club = prefijo + 'club'
-    if clave_club in st.session_state and st.session_state[clave_club] not in filtrados:
-        del st.session_state[clave_club]
-    campos['id_club'] = st.selectbox('Club identificado en la clasificación', filtrados,
-                                    index=filtrados.index(original_club) if original_club in filtrados else 0,
-                                    format_func=lambda i: 'Sin confirmar / sin club' if i is None else por_club[i]['nombre'],
-                                    key=clave_club, disabled=not editable)
-    st.caption('Al vincular una ficha existente, este club describe la fuente y no modifica el club actual de esa ficha.')
+    if accion == 'vincular':
+        campos['id_club'] = p['id_club_identificado']
+        club_fuente = por_club[original_club]['nombre'] if original_club is not None else p['club_original']
+        if club_fuente:
+            st.caption(f'Club en la clasificación: {club_fuente}.')
+        st.caption('La vinculación utiliza la ficha existente. El club de la clasificación se conserva y no cambia el club actual de la ficha.')
+    else:
+        original_fed = por_club[original_club]['id_federacion'] if original_club is not None else None
+        opciones_fed = [None] + list(por_federacion)
+        federacion = st.selectbox('Federación para localizar el club de la fuente', opciones_fed,
+                                  index=opciones_fed.index(original_fed), key=prefijo + 'federacion', disabled=not editable,
+                                  format_func=lambda i: 'Todas las federaciones' if i is None else por_federacion[i]['nombre'])
+        filtrados = [None] + [i for i, c in por_club.items() if federacion is None or c['id_federacion'] == federacion]
+        clave_club = prefijo + 'club'
+        if clave_club in st.session_state and st.session_state[clave_club] not in filtrados:
+            del st.session_state[clave_club]
+        campos['id_club'] = st.selectbox('Club identificado en la clasificación', filtrados,
+                                        index=filtrados.index(original_club) if original_club in filtrados else 0,
+                                        format_func=lambda i: 'Sin confirmar / sin club' if i is None else por_club[i]['nombre'],
+                                        key=clave_club, disabled=not editable)
     if imp['numero_tripulantes'] == 1:
         campos['rol_propuesto'] = 'Patron'
         st.caption(f'{imp["nombre_clase"]} es una clase individual: rol asignado automáticamente como patrón.')
@@ -304,7 +310,7 @@ def _mostrar(proveedor, motor, lectura, pantalla):
                                               key=prefijo + 'rol', disabled=not editable)
     campos['observaciones_revision'] = st.text_area('Observaciones de la revisión', value=p['observaciones_revision'] or '', key=prefijo + 'notas', disabled=not editable)
     if accion in ('crear','vincular'):
-        st.caption('Recordar decisiones es opcional: confirma primero el club de la fuente. Solo afecta a este nombre y ese club; no cambia el nombre oficial de la ficha.')
+        st.caption('Recordar decisiones de nombres es opcional y requiere un club de la fuente identificado. Puedes vincular sin él; si quieres recordarlas, resuelve antes el club en Resolver clubes del documento.')
         recordar=st.checkbox('Recordar este nombre como variante de la ficha confirmada',key=prefijo+'recordar_nombre_'+str(elegido)+'_'+str(campos['id_club']),disabled=not editable or campos['id_club'] is None)
         descartables={c['dni']:c for c in candidatos if c['dni']!=elegido}
         clave_descartes=prefijo+'descartar_nombres'
@@ -316,26 +322,25 @@ def _mostrar(proveedor, motor, lectura, pantalla):
         if recordar:campos['recordar_nombre']=True
         if descartados:campos['descartar_dnis']=descartados
     miembros = resultados.miembros_fila(revision, fila)
-    automatico = accion == 'crear' or (accion == 'vincular' and any(
-        m['estado'] == 'nuevo_confirmado' and m['id_participante_importado'] != participante for m in miembros))
+    automatico = accion in ('crear', 'vincular')
     campos_regata = None
     if automatico:
-        st.subheader('Resultado asociado al alta')
+        st.subheader('Resultado asociado a la revisión')
         st.write(f'{datos_regata["nombre"] or "Regata sin nombre"} · {imp["nombre_clase"]} · Puesto general: {fila["posicion_general"]} · Puntos: {fila["puntos"]}')
         st.caption('El mismo botón guarda la ficha y el resultado. En dobles, el resultado se incorporará cuando estén confirmados ambos miembros y sus roles.')
         campos_regata = datos_regata
     distinto = False
     if accion == 'crear':
         distinto = st.checkbox('He revisado las coincidencias y confirmo que debo crear una ficha nueva.', key=prefijo + 'confirmar_nuevo', disabled=not editable)
-    etiquetas = {'crear': 'Crear deportista y guardar resultado', 'vincular': 'Vincular ficha seleccionada', 'pendiente': 'Guardar pendiente'}
+    etiquetas = {'crear': 'Crear deportista y guardar resultado', 'vincular': 'Vincular ficha y guardar resultado', 'pendiente': 'Guardar pendiente'}
     if automatico and imp['numero_tripulantes'] == 2:
         otros = [m for m in miembros if m['id_participante_importado'] != participante]
         completa = (len(otros) == 1 and otros[0]['dni_deportista_confirmado']
                     and sorted([otros[0]['rol_propuesto'] or '', campos['rol_propuesto'] or '']) == ['Patron', 'Tripulante'])
         if accion == 'crear' and not completa:
             etiquetas['crear'] = 'Crear deportista y dejar equipo pendiente'
-        elif accion == 'vincular' and completa:
-            etiquetas['vincular'] = 'Vincular ficha y guardar resultado'
+        elif accion == 'vincular' and not completa:
+            etiquetas['vincular'] = 'Vincular ficha y dejar equipo pendiente'
     desactivado = not editable or (accion == 'vincular' and (not elegido or not confirmar)) or (accion == 'crear' and not distinto)
     if st.button(etiquetas[accion], type='primary', disabled=desactivado, key=prefijo + 'guardar'):
         try:

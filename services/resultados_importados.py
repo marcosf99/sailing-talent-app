@@ -40,6 +40,9 @@ def incidencias(revision, fila):
     errores = []
     if fila['cumple_criterio'] is not True or fila['estado'] == 'excluida':
         errores.append('Fuera del criterio de selección.')
+    elif base.evaluar_seleccion(revision['importacion']['nivel'], fila['posicion_general'],
+                               fila.get('numero_vela_original'))['cumple_criterio'] is not True:
+        errores.append('La fila no cumple el criterio actual: solo embarcaciones ESP dentro del corte.')
     if fila['posicion_general'] is None or fila['puntos'] is None:
         errores.append('Falta puesto o puntuación.')
     documentos = [p['dni_deportista_confirmado'] for p in miembros]
@@ -313,7 +316,7 @@ def incorporar(engine, identificador, filas, campos, version):
 
 def guardar_con_resultado(engine, participante, accion, campos, version,
                          dni_existente, confirmar_nuevo_distinto, datos_resultado, version_importacion):
-    """Una transacción para el alta y su resultado; dobles esperan a ambos miembros."""
+    """Una transacción para la identidad y su resultado; dobles esperan a ambos miembros."""
     from services.revision_participantes import guardar_revision_en_conexion
     if accion not in ('crear', 'vincular'):
         raise ValidacionError('El guardado conjunto requiere crear o vincular una identidad.')
@@ -327,31 +330,23 @@ def guardar_con_resultado(engine, participante, accion, campos, version,
             antes = contenido()
             if not isinstance(version_importacion, str) or version_resultados(antes) != version_importacion:
                 raise ConflictoError('La clasificación cambió desde que la abriste. Actualiza antes de crear o vincular.')
-            fila_antes = next(f for f in antes['filas'] if f['id_fila'] == p['id_fila'])
-            conjunta = accion == 'crear' or any(m['estado'] == 'nuevo_confirmado'
-                and m['id_participante_importado'] != participante for m in miembros_fila(antes, fila_antes))
-            if conjunta:
-                metadatos = _metadatos(datos_resultado)
-                # Mismo orden de bloqueo que la incorporación por lotes.
-                conexion.execute(text('SELECT id_clase FROM public.clase WHERE id_clase=:id FOR UPDATE'),
-                                 {'id': antes['importacion']['id_clase']})
-                if antes['importacion']['id_competicion']:
-                    _competicion(conexion, antes['importacion'], metadatos)
-                # La validación del nacimiento debe utilizar las fechas corregidas
-                # en este formulario, no las propuestas anteriores del borrador.
-                conexion.execute(text('''UPDATE public.importacion_clasificacion SET
-                    nombre_competicion_propuesto=:nombre, fecha_inicio_propuesta=:fecha_inicio,
-                    fecha_fin_propuesta=:fecha_fin, localidad_propuesta=:localidad,
-                    tipo_clasificacion=:tipo_clasificacion WHERE id_importacion=:id
-                '''), {**metadatos, 'id': p['id_importacion']})
+            metadatos = _metadatos(datos_resultado)
+            # Mismo orden de bloqueo que la incorporación por lotes.
+            conexion.execute(text('SELECT id_clase FROM public.clase WHERE id_clase=:id FOR UPDATE'),
+                             {'id': antes['importacion']['id_clase']})
+            if antes['importacion']['id_competicion']:
+                _competicion(conexion, antes['importacion'], metadatos)
+            # La validación del nacimiento debe utilizar las fechas corregidas
+            # en este formulario, no las propuestas anteriores del borrador.
+            conexion.execute(text('''UPDATE public.importacion_clasificacion SET
+                nombre_competicion_propuesto=:nombre, fecha_inicio_propuesta=:fecha_inicio,
+                fecha_fin_propuesta=:fecha_fin, localidad_propuesta=:localidad,
+                tipo_clasificacion=:tipo_clasificacion WHERE id_importacion=:id
+            '''), {**metadatos, 'id': p['id_importacion']})
             dni = guardar_revision_en_conexion(conexion, participante, accion, campos, version,
                                                dni_existente, confirmar_nuevo_distinto)
             actual = contenido()
             fila = next(f for f in actual['filas'] if f['id_fila'] == p['id_fila'])
-            nuevos = any(m['estado'] == 'nuevo_confirmado' for m in miembros_fila(actual, fila))
-            if not nuevos or not conjunta:
-                # Fichas ya existentes mantienen la revisión separada de resultados.
-                return dict(dni=dni, resultado_incorporado=False, pendiente_equipo=False)
             problemas = incidencias(actual, fila)
             if problemas:
                 return dict(dni=dni, resultado_incorporado=False, pendiente_equipo=True,

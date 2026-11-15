@@ -85,7 +85,9 @@ en una transaccion fallida, ejecutar `ROLLBACK;` antes de reintentar.
   la revision, antes de confirmar resultados.
 - `mapeo_columnas` y `datos_originales` son objetos JSON. `criterio_inclusion`
   conserva un objeto JSON con el criterio aplicado: autonómicas hasta el puesto
-  40, nacionales hasta el 80 e internacionales con ESP en el numero de vela.
+  40, nacionales hasta el 80 e internacionales sin corte de posición. En todos
+  los niveles se exige ESP en el número de vela; sin ese dato la fila queda
+  pendiente de revisión o excluida si indica otro país.
   Se mantienen los empates en el corte; no se renumeran las posiciones.
 - La huella del documento es SHA-256 en hexadecimal minusculo. Varias
   importaciones pueden compartir documento si corresponde a varias clases.
@@ -584,8 +586,10 @@ Con **Vincular e incorporar los resultados en este paso**, las fichas existentes
 y sus resultados se asocian en una sola transacción, tras revisar también los
 datos de la regata, puestos y puntos. Si algún equipo está incompleto o hay un
 conflicto, se revierte todo el lote. Desmarcar esa opción permite preparar los
-resultados para el botón existente. Las altas individuales conservan el guardado conjunto de deportista
-y resultado ya implementado. No hay migración de esquema ni cargas iniciales
+resultados para el botón existente. Tanto las altas como las vinculaciones
+individuales incorporan el resultado al completar la tripulación y sus roles,
+en la misma transacción. Si falta otro miembro, se conserva la identidad confirmada
+y se informa de que el equipo sigue pendiente. No hay migración de esquema ni cargas iniciales
 de alias: solo se registran equivalencias confirmadas por el usuario.
 
 Se reconocen como propuestas las abreviaturas M.R.C.Y.B., CM Canido y C.V.F.
