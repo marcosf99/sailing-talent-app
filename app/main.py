@@ -1,5 +1,6 @@
 """Inicio: python -m streamlit run app/main.py [-- --db-provider supabase]."""
 import argparse
+from calendar import monthrange
 from datetime import date
 from pathlib import Path
 import os
@@ -187,6 +188,19 @@ def pagina_consulta():
         st.stop()
 
     etiquetas_club = {c["id_club"]: f'{c["nombre"]} · {c["federacion"]}' for c in clubes}
+    preferidas=['Optimist','ILCA 4','ILCA 6','ILCA 7','420','470','29er','49er']
+    catalogo={cl['nombre'] for cl in clases}
+    opciones=[v for v in preferidas if v in catalogo]+sorted(catalogo-set(preferidas))
+    seleccion=st.segmented_control('Clases en las que ha navegado o navega',opciones,
+        selection_mode='multi',key='consulta_clases',
+        help='Se incluyen regatistas de cualquiera de las clases marcadas. Sin selección se muestran todas.')
+    ambito=st.radio('Trayectoria de clases',['Toda la trayectoria','Solo clases activas'],horizontal=True,key='consulta_ambito_clases')
+    a,b=st.columns(2)
+    periodo=a.selectbox('Periodo de resultados',['Últimos 24 meses','Año de consulta','Todo el historial'],key='consulta_periodo')
+    orden=b.selectbox('Ordenar exploración',['Resultados ponderados','Actividad reciente',
+        'Participaciones nacionales e internacionales','Nombre','Nacimiento pendiente'],key='consulta_orden')
+    desde=(date(fecha.year-2,fecha.month,min(fecha.day,monthrange(fecha.year-2,fecha.month)[1])) if periodo=='Últimos 24 meses'
+        else date(fecha.year,1,1) if periodo=='Año de consulta' else None)
     with st.form("buscar_regatistas"):
         izquierda, derecha = st.columns(2)
         with izquierda:
@@ -196,9 +210,7 @@ def pagina_consulta():
                 "Club", [None] + list(etiquetas_club),
                 format_func=lambda c: "Todos los clubes" if c is None else etiquetas_club[c], key="club",
             )
-        a,b,c=st.columns(3)
-        clase=a.selectbox('Clase activa',[None]+[cl['nombre'] for cl in clases],
-            format_func=lambda v:v or 'Todas las clases',key='consulta_filtro_clase')
+        b,c=st.columns(2)
         nacimiento=b.selectbox('Fecha de nacimiento',['Todos','Pendiente','Conocido'],key='consulta_filtro_nacimiento')
         nivel=c.selectbox('Con resultados de nivel',[None,'Autonomico','Nacional','Internacional'],
             format_func=lambda v:('Autonómico' if v=='Autonomico' else v) or 'Cualquier nivel',key='consulta_filtro_nivel')
@@ -213,11 +225,13 @@ def pagina_consulta():
         if cohorte and (anio_min>anio_max or nacimiento=='Pendiente'):
             st.error('Comprueba los años indicados. Las fichas sin nacimiento no pueden filtrarse por año.');return
         st.session_state["criterios"] = (texto.strip(), club)
-        st.session_state['consulta_filtros']=dict(clase=clase,nacimiento=nacimiento,nivel=nivel,
+        st.session_state['consulta_filtros']=dict(nacimiento=nacimiento,nivel=nivel,
             anio_min=int(anio_min) if cohorte else None,anio_max=int(anio_max) if cohorte else None)
         st.session_state.pop("regatista", None)
     criterios = st.session_state.get("criterios", ("", None))
-    filtros=st.session_state.get('consulta_filtros',{})
+    filtros={k:v for k,v in st.session_state.get('consulta_filtros',{}).items() if k!='clase'}
+    filtros.update(clases=tuple(seleccion or ()),solo_activas=ambito=='Solo clases activas',
+        desde_resultados=desde,orden=orden)
 
     try:
         with st.spinner("Buscando regatistas…"):
@@ -227,10 +241,10 @@ def pagina_consulta():
             st.info("No se han encontrado regatistas. Prueba con otro nombre o club.")
             return
         if len(filas) > 500:
-            st.warning("Se muestran los primeros 500 resultados. Precisa la búsqueda para encontrar otros regatistas.")
+            st.warning("Se muestran los primeros 500 regatistas del orden elegido. Precisa los filtros para consultar los demás.")
             filas = filas[:500]
         st.caption(f"{len(filas)} regatistas encontrados")
-        filas=exploracion_regatistas.mostrar_lista(filas,fecha)
+        filas=exploracion_regatistas.mostrar_lista(filas,fecha,orden=orden,desde=desde,clases=seleccion)
         personas = {f["dni"]: f for f in filas}
         if st.session_state.get("regatista") not in personas:
             st.session_state.pop("regatista", None)

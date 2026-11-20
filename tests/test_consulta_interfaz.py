@@ -127,6 +127,41 @@ class TestInterfaz(unittest.TestCase):
         self.assertEqual(len(at.dataframe[0].value),1)
         self.assertTrue(any('es prioritaria' in w.value for w in at.warning))
 
+    def test_barra_multiclase_filtra_sin_pulsar_buscar_y_vacia_significa_todas(self):
+        with patch.object(datos,'cargar_clases',return_value=[dict(nombre=n) for n in ('420','ILCA 4','Optimist')]),patch.object(datos,'buscar',side_effect=buscar) as consulta:
+            at=self.app.run()
+            barra=next(b for b in at.get('button_group') if b.key=='consulta_clases')
+            self.assertEqual([o.content for o in barra.options],['Optimist','ILCA 4','420'])
+            barra.set_value(['Optimist','420']).run()
+            self.assertEqual(len(at.exception),0)
+            self.assertEqual(consulta.call_args.kwargs['clases'],('Optimist','420'))
+            self.assertFalse(consulta.call_args.kwargs['solo_activas'])
+            at.radio(key='consulta_ambito_clases').set_value('Solo clases activas').run()
+            self.assertTrue(consulta.call_args.kwargs['solo_activas'])
+            next(b for b in at.get('button_group') if b.key=='consulta_clases').set_value([]).run()
+            self.assertEqual(consulta.call_args.kwargs['clases'],())
+
+    def test_orden_ponderado_predeterminado_y_periodo_llegan_a_la_consulta(self):
+        with patch.object(datos,'buscar',side_effect=buscar) as consulta:
+            at=self.app.run()
+            self.assertEqual(at.selectbox(key='consulta_orden').value,'Resultados ponderados')
+            self.assertIsInstance(consulta.call_args.kwargs['desde_resultados'],date)
+            self.assertIn('Índice de resultados',at.dataframe[0].value.columns)
+            at.selectbox(key='consulta_periodo').set_value('Todo el historial').run()
+            self.assertIsNone(consulta.call_args.kwargs['desde_resultados'])
+            at.selectbox(key='consulta_orden').set_value('Nombre').run()
+            self.assertEqual(consulta.call_args.kwargs['orden'],'Nombre')
+            self.assertEqual(len(at.exception),0)
+
+    def test_lista_respeta_el_orden_de_la_base_y_describe_la_ponderacion(self):
+        def invertida(*args,**kwargs):return list(reversed(buscar(*args,**kwargs)))
+        with patch.object(datos,'buscar',side_effect=invertida):
+            at=self.app.run()
+            self.assertEqual(at.selectbox(key='regatista').value,'STDEMO0004')
+            self.assertEqual(at.dataframe[0].value.iloc[0]['Regatista'],'Iago Rey Blanco')
+            self.assertTrue(any('4.º internacional aporta 500' in c.value for c in at.caption))
+            self.assertFalse(at.checkbox(key='consulta_detalle_deportivo').value)
+
     def test_completar_nacimiento_solo_al_guardar_y_refresca_edad(self):
         from services import deportistas
         nacimiento=[None]
