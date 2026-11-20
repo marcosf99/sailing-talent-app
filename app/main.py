@@ -19,6 +19,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from app import datos, candidatos, gestion_deportistas, antropometria, unidades_competitivas, informes, importaciones, revision_participantes
 from services import edad_clases
 from app import consulta_informes, transiciones, evolucion as graficos_evolucion
+from app import calidad_fichas, exploracion_regatistas
 
 
 st.set_page_config(page_title="Sailing Talent", page_icon="⛵", layout="wide")
@@ -30,7 +31,7 @@ def motor(proveedor):
     return datos.crear_motor_lectura(proveedor)
 
 
-def lectura(clave, funcion, *argumentos):
+def lectura(clave, funcion, *argumentos, **opciones):
     # Datos personales únicamente en la sesión del navegador; caducidad 60 s.
     cache = st.session_state.setdefault("lecturas", {})
     ahora = monotonic()
@@ -40,7 +41,7 @@ def lectura(clave, funcion, *argumentos):
     if clave not in cache:
         if len(cache) >= 40:
             cache.clear()
-        cache[clave] = (ahora, funcion(*argumentos))
+        cache[clave] = (ahora, funcion(*argumentos, **opciones))
     return cache[clave][1]
 
 
@@ -146,17 +147,19 @@ def configuracion():
     # Evita conservar selecciones y registros de otro proveedor.
     if st.session_state.get("proveedor_anterior") != proveedor:
         st.session_state["lecturas"] = {}
-        for clave in ("regatista", "club", "indicador", "criterios", "filtros_candidatos_aplicados",
+        for clave in ("regatista", "club", "indicador", "criterios", "consulta_filtros", "filtros_candidatos_aplicados",
                       "comparar_seleccion", "comparar_indicador", "comparar_eje", "cand_clase", "cand_sexo",
                       "cand_usar_edad", "cand_edad_min", "cand_edad_max", "cand_usar_altura", "cand_altura"):
             st.session_state.pop(clave, None)
         for clave in list(st.session_state):
-            if clave.startswith(("gestion_", "antropo_", "unidades_", "informes_", "importacion_", "revision_", "consulta_informe_", "comparar_informe_", "trans_")):
+            if clave.startswith(("gestion_", "antropo_", "unidades_", "informes_", "importacion_", "revision_", "consulta_informe_", "comparar_informe_", "trans_", "calidad_", "pendientes_", "consulta_filtro_")):
                 st.session_state.pop(clave, None)
         st.session_state["proveedor_anterior"] = proveedor
 
     if st.session_state.get("fecha_anterior") != fecha:
         st.session_state.pop("comparar_seleccion", None)
+        for clave in ('consulta_filtros','consulta_filtro_cohorte','consulta_filtro_anio_min','consulta_filtro_anio_max'):
+            st.session_state.pop(clave,None)
         for clave in list(st.session_state):
             if clave.startswith('trans_'):
                 st.session_state.pop(clave, None)
@@ -167,7 +170,8 @@ def configuracion():
 def pagina_consulta():
     st.title("Sailing Talent")
     st.write("Consulta de regatistas y seguimiento de su trayectoria deportiva.")
-    st.caption("Primera versión de consulta · Datos de prueba ficticios")
+    st.caption("Explora la actividad deportiva y completa los datos necesarios para estudiar la evolución por edad.")
+    calidad_fichas.mensaje_guardado()
 
     proveedor, fecha = PROVEEDOR, FECHA
 
@@ -175,6 +179,7 @@ def pagina_consulta():
         conexion = motor(proveedor)
         with st.spinner("Consultando clubes…"):
             clubes = lectura((proveedor, "clubes"), datos.cargar_clubes, conexion)
+            clases = lectura((proveedor, "clases"), datos.cargar_clases, conexion)
     except (SQLAlchemyError, KeyError, ValueError, OSError):
         st.error("No se pudo conectar con la base seleccionada. Revisa su configuración en .env y la conexión a Internet.")
         if proveedor == "cloudsql":
@@ -191,15 +196,33 @@ def pagina_consulta():
                 "Club", [None] + list(etiquetas_club),
                 format_func=lambda c: "Todos los clubes" if c is None else etiquetas_club[c], key="club",
             )
+        a,b,c=st.columns(3)
+        clase=a.selectbox('Clase activa',[None]+[cl['nombre'] for cl in clases],
+            format_func=lambda v:v or 'Todas las clases',key='consulta_filtro_clase')
+        nacimiento=b.selectbox('Fecha de nacimiento',['Todos','Pendiente','Conocido'],key='consulta_filtro_nacimiento')
+        nivel=c.selectbox('Con resultados de nivel',[None,'Autonomico','Nacional','Internacional'],
+            format_func=lambda v:('Autonómico' if v=='Autonomico' else v) or 'Cualquier nivel',key='consulta_filtro_nivel')
+        cohorte=st.checkbox('Filtrar por año de nacimiento',key='consulta_filtro_cohorte')
+        a,b=st.columns(2)
+        anio_min=a.number_input('Año de nacimiento desde',min_value=1900,max_value=fecha.year,
+            value=min(2010,fecha.year),step=1,key='consulta_filtro_anio_min')
+        anio_max=b.number_input('Año de nacimiento hasta',min_value=1900,max_value=fecha.year,
+            value=min(2015,fecha.year),step=1,key='consulta_filtro_anio_max')
         buscar = st.form_submit_button("Buscar", type="primary")
     if buscar:
+        if cohorte and (anio_min>anio_max or nacimiento=='Pendiente'):
+            st.error('Comprueba los años indicados. Las fichas sin nacimiento no pueden filtrarse por año.');return
         st.session_state["criterios"] = (texto.strip(), club)
+        st.session_state['consulta_filtros']=dict(clase=clase,nacimiento=nacimiento,nivel=nivel,
+            anio_min=int(anio_min) if cohorte else None,anio_max=int(anio_max) if cohorte else None)
         st.session_state.pop("regatista", None)
     criterios = st.session_state.get("criterios", ("", None))
+    filtros=st.session_state.get('consulta_filtros',{})
 
     try:
         with st.spinner("Buscando regatistas…"):
-            filas = lectura((proveedor, "buscar", criterios), datos.buscar, conexion, *criterios)
+            filas = lectura((proveedor,"explorar",criterios,fecha,tuple(sorted(filtros.items()))),
+                datos.buscar,conexion,*criterios,fecha,**filtros)
         if not filas:
             st.info("No se han encontrado regatistas. Prueba con otro nombre o club.")
             return
@@ -207,6 +230,7 @@ def pagina_consulta():
             st.warning("Se muestran los primeros 500 resultados. Precisa la búsqueda para encontrar otros regatistas.")
             filas = filas[:500]
         st.caption(f"{len(filas)} regatistas encontrados")
+        filas=exploracion_regatistas.mostrar_lista(filas,fecha)
         personas = {f["dni"]: f for f in filas}
         if st.session_state.get("regatista") not in personas:
             st.session_state.pop("regatista", None)
@@ -228,7 +252,13 @@ def pagina_consulta():
     st.write(f'{p["club"] or "Sin club"} · {p["federacion"] or "Sin federación"}')
     nacimiento = p.get("fecha_nacimiento")
     anio_nacimiento = str(nacimiento.year) if nacimiento is not None else "Sin registrar"
-    st.caption(f'{p["sexo"] or "Sexo no registrado"} · Edad: {valor(p["edad"], " años")} · Año de nacimiento: {anio_nacimiento} · Clase activa: {p["clases_activas"] or "Sin unidad activa"}')
+    st.caption(f'{p["sexo"] or "Sexo no registrado"} · Edad: {valor(p["edad"] if nacimiento else None, " años")} · Año de nacimiento: {anio_nacimiento} · Clase activa: {p["clases_activas"] or "Sin unidad activa"}')
+    if nacimiento is None:
+        st.warning('Fecha de nacimiento pendiente: es prioritaria para comparar esta trayectoria por edad.')
+        with st.expander('Completar fecha de nacimiento',expanded=True):
+            calidad_fichas.editar_nacimiento(proveedor,dni,prefijo='consulta')
+    else:
+        st.caption('Nacimiento: '+nacimiento.strftime('%d/%m/%Y'))
     a, b, c = st.columns(3)
     a.metric("Participaciones", p["participaciones"])
     b.metric("Mejor puesto general", valor(p["mejor_puesto"], "º"))
@@ -239,11 +269,14 @@ def pagina_consulta():
 
     resultados, fisico, equipos, informes_tecnicos = st.tabs(["Resultados deportivos", "Evolución física", "Trayectoria y equipos", "Informes técnicos"])
     with resultados:
+        exploracion_regatistas.mostrar_resumen(contenido,fecha)
         st.subheader("Resultados deportivos")
         if contenido["resultados"]:
-            tabla(contenido["resultados"], {
+            tabla([{**r,'edad_en_regata':candidatos.edad_en_medicion(nacimiento,r['fecha_inicio'])}
+                   for r in contenido["resultados"]], {
                 "competicion": "Competición", "fecha_inicio": "Inicio", "fecha_fin": "Fin",
                 "clase": "Clase", "nivel": "Nivel", "localidad": "Localidad",
+                "edad_en_regata":"Edad al competir",
                 "posicion_general": "Puesto general", "posicion_categoria": "Puesto categoría", "puntos": "Puntos",
             })
             st.caption("En clases dobles, el resultado corresponde al equipo y se comparte entre sus miembros.")
@@ -323,12 +356,20 @@ def pagina_revision():
         st.error("No se pudo abrir la revisión de participantes. Comprueba la conexión y actualiza los datos.")
 
 
+def pagina_calidad():
+    try:
+        calidad_fichas.mostrar(PROVEEDOR,motor(PROVEEDOR),lectura)
+    except (SQLAlchemyError,KeyError,ValueError,OSError):
+        st.error('No se pudo consultar la calidad de las fichas. Revisa la conexión y pulsa Actualizar datos.')
+
+
 PROVEEDOR, FECHA = configuracion()
 revisar_cierres_por_edad(PROVEEDOR)
 st.navigation([
     st.Page(pagina_consulta, title="Consulta de regatistas", default=True),
     st.Page(pagina_candidatos, title="Candidatos y comparación", url_path="candidatos"),
     st.Page(pagina_gestion, title="Gestión de deportistas", url_path="gestion-deportistas"),
+    st.Page(pagina_calidad, title="Calidad de fichas", url_path="calidad-fichas"),
     st.Page(pagina_antropometria, title="Registros antropométricos", url_path="registros-antropometricos"),
     st.Page(pagina_unidades, title="Unidades competitivas", url_path="unidades-competitivas"),
     st.Page(pagina_informes, title="Informes técnicos", url_path="informes-tecnicos"),

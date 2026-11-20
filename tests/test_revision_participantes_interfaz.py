@@ -60,6 +60,7 @@ class PantallaRevision(unittest.TestCase):
         self.mocks = [p.start() for p in self.patches]
         self.addCleanup(lambda: [p.stop() for p in reversed(self.patches)])
         self.at = AppTest.from_string(SCRIPT, default_timeout=15)
+        self.at.session_state['revision_interfaz_detallada']=True
         self.at.session_state['revision_mostrar_individual']=True
         self.at.session_state['revision_solo_pendientes_1']=False
 
@@ -122,6 +123,19 @@ class PantallaRevision(unittest.TestCase):
         self.assertFalse(any(r.label=='Decisión' for r in self.at.radio))
         next(c for c in self.at.checkbox if c.label.startswith('Revisar una identidad individual')).check().run()
         self.mocks[2].assert_called_once()
+
+    def test_vista_guiada_es_la_predeterminada_y_no_muestra_todas_las_herramientas(self):
+        self.at.session_state['revision_interfaz_detallada']=False
+        self.at.run()
+        self.assertEqual(len(self.at.exception),0)
+        self.assertFalse(any(c.label=='Revisar una identidad individual · coincidencias dudosas o correcciones' for c in self.at.checkbox))
+        self.assertFalse(any(r.label=='Decisión' for r in self.at.radio))
+        self.assertFalse(any(e.label=='Datos personales pendientes · por federación y club' for e in self.at.expander))
+        next(b for b in self.at.button if b.label=='Resolver 2 casos pendientes').click().run()
+        self.assertEqual(len(self.at.exception),0)
+        self.assertTrue(any(r.label=='Decisión' for r in self.at.radio))
+        selector=next(s for s in self.at.selectbox if s.label=='Participante que deseas revisar')
+        self.assertEqual(len(selector.options),1)
 
     def test_vinculo_exige_eleccion_y_confirmacion(self):
         self.at.run()

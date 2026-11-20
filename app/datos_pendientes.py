@@ -24,7 +24,7 @@ def agrupar(filas):
     return list(grupos.values())
 
 
-def mostrar(proveedor,motor,lectura):
+def mostrar(proveedor,motor,lectura,*,priorizar_nacimiento=False,permitir_edicion=False):
     with st.expander('Datos personales pendientes · por federación y club',expanded=True):
         st.caption('Todas las fichas de la base seleccionada, no solo esta clasificación. '
                    'TEMP-, TEST-, STDEMO y PRUEBA identifican documentos provisionales o de prueba. '
@@ -48,7 +48,13 @@ def mostrar(proveedor,motor,lectura):
         if st.session_state.get(clave) not in clubes:st.session_state.pop(clave,None)
         club = st.selectbox('Club de los datos pendientes',[None]+list(clubes),
             format_func=lambda v:'Todos los clubes' if v is None else clubes[v],key=clave)
-        dato = st.selectbox('Dato pendiente',['Cualquiera','Sin DNI','Sin fecha de nacimiento','Ambos datos'],key='pendientes_dato_'+proveedor)
+        if priorizar_nacimiento:
+            st.caption('Totales de datos pendientes en la base seleccionada, antes de aplicar los filtros.')
+            a,b=st.columns(2)
+            a.metric('Fechas de nacimiento pendientes',sum(f['sin_nacimiento'] for f in filas))
+            b.metric('Documentos pendientes',sum(f['sin_dni'] for f in filas))
+        dato = st.selectbox('Dato pendiente',['Cualquiera','Sin DNI','Sin fecha de nacimiento','Ambos datos'],
+            index=2 if priorizar_nacimiento else 0,key='pendientes_dato_'+proveedor+('_calidad' if priorizar_nacimiento else ''))
         elegidas = filtrar(filas,fed,club,dato)
         st.caption(f'{len(elegidas)} deportistas · {sum(f["sin_dni"] for f in elegidas)} sin DNI · {sum(f["sin_nacimiento"] for f in elegidas)} sin fecha de nacimiento. Una ficha puede tener ambos datos pendientes.')
         if not elegidas:
@@ -58,3 +64,13 @@ def mostrar(proveedor,motor,lectura):
             'Federación':f['federacion'] or 'Sin federación','Club':f['club'] or 'Sin club',
             'DNI pendiente':'Sí' if f['sin_dni'] else 'No',
             'Nacimiento pendiente':'Sí' if f['sin_nacimiento'] else 'No'} for f in elegidas]),hide_index=True,width='stretch')
+        pendientes={f['dni']:f for f in elegidas if f['sin_nacimiento']}
+        if permitir_edicion and pendientes:
+            from app.calidad_fichas import editar_nacimiento
+            st.subheader('Completar fecha de nacimiento')
+            clave='calidad_persona_'+proveedor
+            if st.session_state.get(clave) not in pendientes:
+                st.session_state.pop(clave,None)
+            dni=st.selectbox('Ficha con nacimiento pendiente',list(pendientes),key=clave,
+                format_func=lambda d:pendientes[d]['nombre']+' '+pendientes[d]['apellidos']+' · '+(pendientes[d]['club'] or 'Sin club')+' · '+d)
+            editar_nacimiento(proveedor,dni)

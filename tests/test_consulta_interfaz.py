@@ -12,8 +12,14 @@ from services import edad_clases
 CLUBES=[dict(id_club=1,nombre='Portosín',federacion='Galicia'),dict(id_club=2,nombre='Vigo',federacion='Galicia')]
 PERSONAS=[dict(dni='STDEMO0001',nombre='Alba',apellidos='Lago Varela',club='Portosín'),dict(dni='STDEMO0004',nombre='Iago',apellidos='Rey Blanco',club='Vigo')]
 
-def buscar(motor,texto,club):
-    return [] if texto=='no existe' else PERSONAS
+def buscar(motor,texto,club,fecha=None,**filtros):
+    if texto=='no existe':return []
+    filas=[{**ficha(motor,p['dni'],fecha or date.today())['ficha'],
+        'nacionales':0 if p['dni'].endswith('4') else 2,'internacionales':0,
+        'mejor_nacional':None if p['dni'].endswith('4') else 1,
+        'ultima_regata':None if p['dni'].endswith('4') else date(2026,5,2)} for p in PERSONAS]
+    if filtros.get('nacimiento')=='Pendiente':filas=[p for p in filas if p['fecha_nacimiento'] is None]
+    return filas
 
 def ficha(motor,dni,fecha):
     sin=dni.endswith('4');p=PERSONAS[1 if sin else 0]
@@ -26,7 +32,7 @@ def ficha(motor,dni,fecha):
 
 class TestInterfaz(unittest.TestCase):
     def setUp(self):
-        self.patches=[patch.dict(os.environ,{'DB_PROVIDER':'supabase'}),patch.object(datos,'crear_motor_lectura',side_effect=lambda p:p),patch.object(datos,'cargar_clubes',return_value=CLUBES),patch.object(datos,'buscar',side_effect=buscar),patch.object(datos,'cargar_ficha',side_effect=ficha)]
+        self.patches=[patch.dict(os.environ,{'DB_PROVIDER':'supabase'}),patch.object(datos,'crear_motor_lectura',side_effect=lambda p:p),patch.object(datos,'cargar_clubes',return_value=CLUBES),patch.object(datos,'cargar_clases',return_value=[dict(nombre='Optimist')]),patch.object(datos,'buscar',side_effect=buscar),patch.object(datos,'cargar_ficha',side_effect=ficha)]
         for p in self.patches:p.start()
         edad = patch.object(edad_clases, 'pendientes_por_edad', return_value=[])
         self.edad = edad.start()
@@ -40,7 +46,7 @@ class TestInterfaz(unittest.TestCase):
         self.assertEqual(at.title[0].value,'Sailing Talent')
         self.assertEqual([x.label for x in at.tabs],['Resultados deportivos','Evolución física','Trayectoria y equipos','Informes técnicos'])
         self.assertEqual(at.metric[0].value,'2')
-        self.assertEqual(len(at.dataframe),3)
+        self.assertEqual(len(at.dataframe),5)
         self.assertEqual(len(at.get('arrow_vega_lite_chart')),2)
 
     def test_sin_mediciones_o_resultados(self):
@@ -108,6 +114,40 @@ class TestInterfaz(unittest.TestCase):
         at=self.app.run();at.selectbox(key='regatista').set_value('STDEMO0004').run()
         self.assertTrue(any('Año de nacimiento: Sin registrar' in c.value for c in at.caption))
         self.assertEqual(len(at.exception),0)
+
+    def test_exploracion_contextual_y_filtro_de_nacimiento_pendiente(self):
+        at=self.app.run()
+        exploracion=at.dataframe[0].value
+        self.assertIn('Año nacimiento',exploracion.columns)
+        self.assertIn('Mejor internacional',exploracion.columns)
+        at.selectbox(key='consulta_filtro_nacimiento').set_value('Pendiente')
+        next(b for b in at.button if b.label=='Buscar').click().run()
+        self.assertEqual(len(at.exception),0)
+        self.assertEqual(at.selectbox(key='regatista').value,'STDEMO0004')
+        self.assertEqual(len(at.dataframe[0].value),1)
+        self.assertTrue(any('es prioritaria' in w.value for w in at.warning))
+
+    def test_completar_nacimiento_solo_al_guardar_y_refresca_edad(self):
+        from services import deportistas
+        nacimiento=[None]
+        def ficha_editable(motor,dni,fecha):
+            c=ficha(motor,dni,fecha)
+            if dni.endswith('4'):
+                c['ficha']['fecha_nacimiento']=nacimiento[0]
+                c['ficha']['edad']=14 if nacimiento[0] else None
+            return c
+        def guardar(proveedor,dni,valor,anterior):
+            self.assertEqual((proveedor,dni,anterior),('supabase','STDEMO0004',None))
+            nacimiento[0]=valor
+        with patch.object(datos,'cargar_ficha',side_effect=ficha_editable),patch.object(deportistas,'guardar_nacimiento_en_proveedor',side_effect=guardar) as guardado:
+            at=self.app.run();at.selectbox(key='regatista').set_value('STDEMO0004').run()
+            guardado.assert_not_called()
+            next(d for d in at.date_input if d.label=='Fecha de nacimiento confirmada').set_value(date(2012,1,4))
+            next(b for b in at.button if b.label=='Guardar fecha de nacimiento').click().run()
+            guardado.assert_called_once()
+            self.assertEqual(len(at.exception),0)
+            self.assertTrue(any('Año de nacimiento: 2012' in c.value for c in at.caption))
+            self.assertTrue(any('Fecha de nacimiento guardada' in s.value for s in at.success))
 
     def test_cierres_edad_solo_si_vencidos_y_una_vez_por_dia(self):
         self.edad.return_value = [{'id_unidad': 7}]

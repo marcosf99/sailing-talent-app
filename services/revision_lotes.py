@@ -1,5 +1,7 @@
 """Revisión explícita por lotes: propuestas de lectura y escrituras atómicas."""
 from difflib import SequenceMatcher
+from contextlib import contextmanager
+from copy import deepcopy
 from decimal import Decimal, InvalidOperation
 import hashlib
 import json
@@ -400,32 +402,43 @@ def guardar_en_proveedor(proveedor, operacion, identificador, decisiones, versio
                 raise ValidacionError('Confirma el umbral de las altas automáticas.')
             return crear_nuevos(motor,identificador,None,version,datos_resultado,
                 confirmar=True,umbral_altas=decisiones['umbral'])
+        if operacion == 'revision_rapida':
+            if not isinstance(decisiones,dict) or set(decisiones)!={'filas','umbral','version_plan'}:
+                raise ValidacionError('Actualiza la vista previa antes de guardar.')
+            return guardar_revision_rapida(motor,identificador,decisiones['filas'],version,
+                decisiones['version_plan'],datos_resultado,umbral=decisiones['umbral'],confirmar=True)
         raise ValidacionError('Selecciona una operación de revisión válida.')
     finally:
         motor.dispose()
 
 
-def crear_nuevos(engine, identificador, decisiones, version, datos_resultado, *, confirmar=False,umbral_altas=None):
+def crear_nuevos(engine, identificador, decisiones, version, datos_resultado, *, confirmar=False,umbral_altas=None,
+                 solo_filas=None, incorporar=True):
     """Altas provisionales conservadoras y sus resultados, sin saltar coincidencias."""
     automatico=umbral_altas is not None
     umbral_altas=validar_umbral_altas(umbral_altas) if automatico else None
     if confirmar is not True or (automatico and decisiones is not None) or (not automatico and (not isinstance(decisiones,list) or not decisiones)):
         raise ValidacionError('Selecciona y confirma las altas revisadas.')
+    if type(incorporar) is not bool or (solo_filas is not None and
+            (not automatico or not isinstance(solo_filas,set) or any(type(i) is not int for i in solo_filas))):
+        raise ValidacionError('Selecciona filas válidas para el lote.')
     try:
         with engine.begin() as c:
             contenido = _contenido(c, identificador, True)
             if version != resultados.version_resultados(contenido):
                 raise ConflictoError('El borrador cambió. Actualiza antes de crear el lote.')
-            resultados._metadatos(datos_resultado)
+            metadatos=resultados._metadatos(datos_resultado)
             imp=contenido['importacion']
             competicion=datos.referencia_competicion(c,imp['id_competicion']) if imp['id_competicion'] else None
-            fecha_regata=competicion['fecha_inicio'] if competicion else imp['fecha_inicio_propuesta']
+            fecha_regata=competicion['fecha_inicio'] if competicion else metadatos['fecha_inicio']
             fichas, aliases = datos.fichas_revision(c), datos.aliases_revision(c)
             clubes = {cl['id_club']:cl for cl in datos.clubes_revision(c)}
             pendientes = {p['id_participante_importado']: p for p in _pendientes(contenido)}
             if automatico:
                 plan=plan_altas_automaticas(contenido,_propuestas(c,contenido,fichas,aliases),umbral_altas)
                 decisiones=plan['decisiones']
+                if solo_filas is not None:
+                    decisiones=[d for d in decisiones if pendientes[d['participante']]['id_fila'] in solo_filas]
                 if not decisiones:raise ValidacionError('No hay altas automáticas preparadas con este umbral. Revisa las identidades o los equipos pendientes.')
             # Validar la forma antes de simular, sin confiar en datos de la interfaz.
             for d in decisiones:
@@ -514,8 +527,119 @@ def crear_nuevos(engine, identificador, decisiones, version, datos_resultado, *,
             listas = [f['id_fila'] for f in resultados.filas_preparadas(actual) if f['id_fila'] in afectadas]
             if afectadas != set(listas):
                 raise ValidacionError('Completa los miembros, roles, puestos y puntos de los equipos del lote. No se guardó ninguna alta.')
+            if not incorporar:
+                return {'creados':len(vistos),'resultados_preparados':len(listas)}
             total = resultados.incorporar_en_conexion(c, identificador, listas, datos_resultado,
                                                      resultados.version_resultados(actual))
             return {'creados': len(vistos), 'resultados_incorporados': total}
     except IntegrityError:
         raise ConflictoError('No se creó ninguna ficha del lote: hay documentos o referencias incompatibles. Actualiza los datos.') from None
+
+
+def plan_revision_rapida(contenido,resumen,umbral='.75',datos_regata=None):
+    """Una propuesta por embarcación: vincular, crear y guardar un resultado juntos."""
+    umbral=validar_umbral_altas(umbral)
+    simulado=deepcopy(contenido)
+    propuestas={r['participante']['id_participante_importado']:r for r in resumen['propuestas']}
+    vinculos={}
+    fecha=None
+    error_regata=None
+    if datos_regata is not None:
+        try:
+            fecha=resultados._metadatos(datos_regata)['fecha_inicio']
+            simulado['importacion']['fecha_inicio_propuesta']=fecha
+        except ValidacionError as error:
+            error_regata=str(error)
+    else:error_regata='Completa los datos de la regata.'
+    for p in simulado['participantes']:
+        r=propuestas.get(p['id_participante_importado'])
+        if p['dni_deportista_confirmado'] or not r or not r['propuesta']:continue
+        ficha=r['propuesta']
+        if fecha and ficha.get('fecha_nacimiento') and ficha['fecha_nacimiento']>fecha:continue
+        rol='Patron' if simulado['importacion']['numero_tripulantes']==1 else p['rol_propuesto']
+        if rol not in ('Patron','Tripulante'):continue
+        p.update(dni_deportista_confirmado=ficha['dni'],estado='vinculado',rol_propuesto=rol)
+        vinculos[p['id_participante_importado']]=dict(participante=p['id_participante_importado'],
+            dni=ficha['dni'],version_ficha=ficha['version_ficha'],rol=rol)
+    nuevas=plan_altas_automaticas(simulado,resumen['propuestas'],umbral)
+    altas={d['participante']:d for d in nuevas['decisiones'] if d['participante'] not in vinculos}
+    motivos={r['participante']:r['motivo'] for r in nuevas['pendientes']}
+    for p in simulado['participantes']:
+        ident=p['id_participante_importado']
+        if ident in altas:
+            p.update(dni_deportista_confirmado='ALTA-'+str(ident),estado='nuevo_confirmado',
+                     rol_propuesto=altas[ident]['campos']['rol_propuesto'])
+    preparadas,pendientes=[],[]
+    for fila in simulado['filas']:
+        if fila['estado'] in ('importada','excluida') or fila['cumple_criterio'] is not True:continue
+        miembros=resultados.miembros_fila(simulado,fila)
+        errores=resultados.incidencias(simulado,fila)
+        if errores:
+            casos=[]
+            for p in miembros:
+                if not p['dni_deportista_confirmado']:
+                    razon=motivos.get(p['id_participante_importado'],'Revisa la identidad y el rol de este participante.')
+                    casos.append(p['nombre_original']+': '+razon)
+            pendientes.append(dict(fila=fila['id_fila'],puesto=fila['posicion_general'],
+                participantes=[p['id_participante_importado'] for p in miembros],
+                nombres=' / '.join(p['nombre_original'] for p in miembros),motivo=' '.join(casos or errores)))
+        else:
+            ids={p['id_participante_importado'] for p in miembros}
+            preparadas.append(dict(fila=fila['id_fila'],puesto=fila['posicion_general'],puntos=fila['puntos'],
+                nombres=' / '.join(p['nombre_original'] for p in miembros),
+                fichas_existentes=' / '.join(propuestas[i]['propuesta']['nombre']+' '+propuestas[i]['propuesta']['apellidos']
+                    for i in sorted(ids) if i in vinculos),
+                fichas_nuevas=' / '.join(altas[i]['campos']['nombre']+' '+altas[i]['campos']['apellidos'] for i in sorted(ids) if i in altas),
+                vinculos=[d for i,d in vinculos.items() if i in ids],
+                altas=[d for i,d in altas.items() if i in ids]))
+    plan=dict(preparadas=preparadas,pendientes=pendientes,umbral=str(umbral),error_regata=error_regata)
+    plan['version']=_huella([resumen['version'],datos_regata,plan])
+    return plan
+
+
+class _TransaccionExistente:
+    """Compone los servicios de lotes sin abrir ni confirmar otra transacción."""
+    def __init__(self,conexion):self.conexion=conexion
+
+    @contextmanager
+    def begin(self):
+        yield self.conexion
+
+
+def _guardar_revision_rapida(engine,identificador,filas,version,version_plan,datos_regata,*,umbral='.75',confirmar=False):
+    if confirmar is not True or not isinstance(filas,list) or not filas or any(type(i) is not int or i<=0 for i in filas) or len(set(filas))!=len(filas):
+        raise ValidacionError('Selecciona los resultados revisados que quieres guardar.')
+    resultados._metadatos(datos_regata)
+    with engine.begin() as c:
+        contenido=_contenido(c,identificador,True)
+        if resultados.version_resultados(contenido)!=version:
+            raise ConflictoError('La clasificación cambió. Actualiza la revisión antes de guardar.')
+        resumen=dict(version=version,propuestas=_propuestas(c,contenido,datos.fichas_revision(c),datos.aliases_revision(c)))
+        plan=plan_revision_rapida(contenido,resumen,umbral,datos_regata)
+        if not isinstance(version_plan,str) or plan['version']!=version_plan:
+            raise ConflictoError('Las propuestas o los datos de la regata cambiaron. Actualiza y revisa la vista previa.')
+        listas={p['fila']:p for p in plan['preparadas']}
+        if not set(filas)<=set(listas):
+            raise ConflictoError('Una embarcación seleccionada necesita revisión. No se ha guardado el lote.')
+        seleccionadas=[listas[i] for i in filas]
+        vinculos=[d for fila in seleccionadas for d in fila['vinculos']]
+        altas=[d for fila in seleccionadas for d in fila['altas']]
+        motor=_TransaccionExistente(c)
+        if vinculos:
+            confirmar_vinculos(motor,identificador,vinculos,version,confirmar=True)
+        if altas:
+            actual=_contenido(c,identificador)
+            crear_nuevos(motor,identificador,None,resultados.version_resultados(actual),datos_regata,
+                confirmar=True,umbral_altas=umbral,solo_filas=set(filas),incorporar=False)
+        actual=_contenido(c,identificador)
+        total=resultados.incorporar_en_conexion(c,identificador,filas,datos_regata,resultados.version_resultados(actual))
+        return dict(vinculados=len(vinculos),creados=len(altas),resultados_incorporados=total,
+                    pendientes=len(plan['pendientes'])+len(plan['preparadas'])-len(filas))
+
+
+def guardar_revision_rapida(engine,identificador,filas,version,version_plan,datos_regata,*,umbral='.75',confirmar=False):
+    try:
+        return _guardar_revision_rapida(engine,identificador,filas,version,version_plan,datos_regata,
+            umbral=umbral,confirmar=confirmar)
+    except IntegrityError:
+        raise ConflictoError('No se guardó ninguna parte del lote: hay resultados o referencias incompatibles. Actualiza la revisión.') from None

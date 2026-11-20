@@ -694,6 +694,88 @@ Abrir la pantalla no escribe datos. Al pulsar el botón, el servicio vuelve a
 comprobar las fichas y la versión del borrador, y guarda el lote en una transacción.
 La revisión registra el umbral y la similitud utilizados. No requiere migración.
 
+### Consulta de regatistas y calidad de fichas
+
+La consulta muestra una tabla de exploración con año de nacimiento, edad a la
+fecha consultada, clases activas, participaciones nacionales e internacionales,
+mejores puestos por nivel y última regata registrada. Los filtros de clase activa,
+nivel, nacimiento pendiente y años de nacimiento se aplican en la base antes del
+límite de 500 filas. Puede ordenarse por actividad, experiencia nacional e
+internacional, nombre o nacimiento pendiente. Las agregaciones se obtienen en
+una consulta, sin una consulta adicional por cada regatista.
+
+Los recuentos y mejores puestos de la tabla abarcan el historial completo hasta
+la fecha consultada; el filtro de clase activa selecciona personas, no limita sus
+resultados a esa clase. Son indicadores descriptivos, no puntuaciones de talento.
+En la ficha individual, el resumen separa año natural, clase y nivel, y los
+resultados muestran la edad al competir. No se suman puntos de regatas distintas
+ni se inventan edades cuando falta el nacimiento.
+
+La pantalla **Calidad de fichas** prioriza los nacimientos pendientes, agrupados
+por federación y club, y permite completar una fecha confirmada desde la propia
+pantalla. El mismo formulario está disponible en las fichas sin nacimiento.
+La fecha inicial permanece vacía: no se infiere del nombre, categoría o resultado.
+El guardado modifica únicamente el nacimiento, comprueba que no haya cambiado
+desde la lectura, conserva el identificador y el historial, e invalida las lecturas
+de la sesión. El DNI provisional no impide completar el nacimiento. Editar otros
+datos sigue disponible en Gestión de deportistas.
+
+No requiere cambios en el esquema. `tests/test_seguimiento.py`, las pruebas de
+consulta y `tests/test_calidad_fichas_interfaz.py` comprueban filtros, ausencia de
+duplicados, fecha histórica, guardado explícito y conflictos de edición.
+
+### Revisión y unión de fichas duplicadas
+
+En **Calidad de fichas → Revisar posibles fichas duplicadas**, activa la búsqueda
+para obtener propuestas por nombre y primer apellido. Los nombres propios
+claramente distintos no generan coincidencias solo por compartir apellidos.
+También puedes elegir dos fichas manualmente. La propuesta no confirma una
+identidad y nunca ejecuta una unión por sí sola.
+
+La comparación muestra ambas fichas, los datos resultantes, sus resultados y los
+registros que se trasladarán. Elige el identificador que se conservará, explica
+la comprobación realizada y confirma expresamente que es la misma persona.
+El nombre del destino se conserva; nacimiento, sexo o club vacíos se completan
+con datos de la otra ficha. Los dos nombres originales quedan como variantes
+confirmadas para sus respectivos clubes.
+
+La unión se bloquea si hay documentos definitivos diferentes, nacimientos o
+sexos contradictorios, dos miembros del mismo equipo doble, dos resultados de
+equipos distintos en la misma competición, dos identidades confirmadas en la
+misma embarcación importada o memoria de nombres contradictoria. No corrige
+puestos, puntos, tripulaciones ni fechas de las unidades para resolver esos casos.
+Las unidades compatibles permanecen como estaban, incluidas varias abiertas.
+
+El guardado mueve mediciones, informes, pertenencias a equipos, identidades
+importadas y memoria de nombres en una sola transacción. Los resultados siguen
+vinculados a sus unidades originales. Una pertenencia idéntica de una clase
+individual se consolida sin duplicar resultados. La ficha retirada deja de estar
+disponible como deportista independiente. Se comprueba la versión de las fichas
+y sus relaciones antes de guardar; un fallo revierte también la copia de auditoría.
+
+Para bases existentes ejecuta una vez, en cada proveedor que vaya a utilizarlo:
+
+```sql
+\i sql/migrations/003_fusion_deportistas.sql
+```
+
+En Supabase puedes pegar el contenido del archivo en SQL Editor. En Cloud SQL
+ejecútalo desde `psql` conectado a `sailing_talent`; la ruta debe corresponder al
+archivo en el equipo o en Cloud Shell donde se ejecuta `psql`. La migración es
+repetible y solo crea `fusion_deportista` y su índice; no une ni elimina deportistas.
+`create_tables.sql` ya incluye esta tabla para instalaciones nuevas.
+
+La tabla de auditoría conserva los documentos originales, motivo, datos de ambas
+fichas y sus relaciones antes de la unión, y la ficha resultante. Tiene RLS activado
+sin políticas públicas. La pantalla no incorpora una restauración automática;
+las copias permiten inspeccionar los datos originales. Si falta la migración se
+muestra un aviso y la unión no está disponible. La recogida de nacimientos sigue
+funcionando sin esta migración.
+
+Pruebas en `tests/test_duplicados.py` y `tests/test_duplicados_interfaz.py`, con
+datos ficticios y sin conexiones a bases reales. Se han verificado también los
+recorridos de unión, consolidación, auditoría y rollback en PostgreSQL temporal.
+
 ### Catalogo ampliado de clubes nacionales
 
 `sql/sample_clubes_nacionales.sql` añade 13 clubes españoles observados en las
@@ -729,3 +811,26 @@ Antes de usar esta versión, ejecutar en ambas bases:
 Las tablas nuevas y sus relaciones están descritas en
 `docs/memoria_nombres.md`. La actualización del DNI conserva la memoria mediante
 claves foráneas con `ON UPDATE CASCADE`.
+
+
+### Revisión guiada de clasificaciones
+
+La revisión abre un resumen por embarcación, con las fichas existentes que se
+vincularán, las nuevas que se crearán y sus resultados. Se pueden desmarcar
+embarcaciones completas y guardar las demás con un único botón. Un equipo doble
+puede combinar una ficha existente con una nueva: vínculos, altas TEMP- y
+resultados se guardan en la misma transacción. Un conflicto revierte el lote.
+
+Los casos dudosos quedan en **Resolver casos pendientes**, donde se muestra una
+embarcación cada vez. Desde ahí se identifican clubes, se revisan identidades o
+se completan miembros. Las equivalencias de club se aplican a las apariciones del
+mismo texto y pueden recordarse para próximas cargas. Tras resolverlos, se vuelve
+al resumen para guardar los resultados preparados. DNI y nacimiento desconocidos
+siguen pendientes en Calidad de fichas, sin inventar valores.
+
+El umbral de altas se mantiene en 0,75 y puede ajustarse en un apartado plegado.
+Las propuestas se vuelven a comprobar al guardar; si han cambiado desde la vista
+previa se pide actualizar la revisión. **Herramientas avanzadas → Mostrar revisión
+detallada** conserva los controles anteriores. Este flujo no requiere migraciones
+adicionales. Pruebas: `test_revision_rapida.py` y
+`test_revision_guiada_interfaz.py`.

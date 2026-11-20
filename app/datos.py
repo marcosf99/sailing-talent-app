@@ -3,7 +3,7 @@ from sqlalchemy import event
 
 from database.database import crear_engine
 from database import queries
-from services import informes, antropometria
+from services import informes, antropometria, seguimiento
 
 
 def crear_motor_lectura(proveedor):
@@ -20,8 +20,10 @@ def cargar_clubes(motor):
     return queries.listar_clubes(motor)
 
 
-def buscar(motor, texto, id_club):
+def buscar(motor, texto, id_club, fecha=None, **filtros):
     # Una fila adicional permite detectar si hay que precisar la búsqueda.
+    if fecha is not None:
+        return seguimiento.listar_regatistas(motor,texto,id_club,fecha,**filtros)
     return queries.buscar_deportistas(motor, texto, id_club=id_club, limite=501)
 
 
