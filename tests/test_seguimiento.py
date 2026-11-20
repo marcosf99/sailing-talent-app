@@ -35,6 +35,7 @@ class Seguimiento(unittest.TestCase):
         self.assertEqual((a['mejor_nacional'],a['mejor_internacional']),(3,5))
         self.assertEqual(a['ultima_regata'],date(2026,10,10))
         self.assertEqual(a['clases_activas'],'420')
+        self.assertEqual(set(a['clases_navegadas'].split(',')),{'Optimist','420'})
         self.assertEqual(a['fecha_nacimiento'],date(2012,1,4))
 
     def test_historia_hasta_fecha_sin_regatas_ni_clases_futuras(self):
@@ -60,6 +61,80 @@ class Seguimiento(unittest.TestCase):
         self.assertEqual(self.leer(busqueda='%'),[])
         self.assertEqual(len(self.leer(busqueda='ana')),1)
         for cambios in (dict(nacimiento='otro'),dict(nivel='x'),dict(anio_min=2020,anio_max=2010),dict(anio_min=True),dict(anio_max=2030)):
+            with self.subTest(cambios=cambios),self.assertRaises(ValueError):self.leer(**cambios)
+
+    def test_seleccion_multiple_historica_o_activa_sin_repetir_fichas(self):
+        self.assertEqual([r['dni'] for r in self.leer(clases=['Optimist'])],['D1'])
+        self.assertEqual(self.leer(clases=['Optimist'],solo_activas=True),[])
+        filas=self.leer(clases=['Optimist','420'])
+        self.assertEqual(len(filas),2)
+        self.assertEqual(len({r['dni'] for r in filas}),2)
+        self.assertEqual(self.leer(clases=["420'); DROP TABLE deportista; --"]),[])
+
+    def test_indice_deduplica_eventos_y_comparte_resultado_en_dobles(self):
+        filas={r['dni']:r for r in self.leer()}
+        # Ana: 5.º internacional, 3.º nacional, 8.º nacional; una regata
+        # nacional duplicada por dos unidades cuenta solo por su mejor puesto.
+        esperado=1000/(5**.5)+(100/(3**.5))*.5+(100/(8**.5))*.25
+        self.assertAlmostEqual(float(filas['D1']['indice_resultados']),esperado)
+        self.assertEqual(filas['D1']['resultados_valorados'],3)
+        solo420={r['dni']:r for r in self.leer(clases=['420'])}
+        self.assertAlmostEqual(float(solo420['D1']['indice_resultados']),float(solo420['D2']['indice_resultados']))
+        self.assertEqual(solo420['D1']['participaciones'],1)
+
+    def test_periodo_y_clase_afectan_puntuacion_recuentos_y_filtro_nivel(self):
+        filas={r['dni']:r for r in self.leer(desde_resultados=date(2026,1,1))}
+        self.assertEqual(filas['D1']['participaciones'],2)
+        self.assertAlmostEqual(float(filas['D1']['indice_resultados']),float(filas['D2']['indice_resultados']))
+        anterior=self.leer(clases=['Optimist'])[0]
+        self.assertEqual((anterior['participaciones'],anterior['mejor_nacional']),(2,3))
+        self.assertAlmostEqual(float(anterior['indice_resultados']),100/(3**.5)+.5*100/(8**.5))
+        self.assertEqual(self.leer(clases=['Optimist'],nivel='Internacional'),[])
+        self.assertTrue(all(r['indice_resultados']==0 for r in self.leer(desde_resultados=date(2026,11,1))))
+
+    def test_mejor_resultado_se_ordena_antes_del_limite_y_no_por_apellidos(self):
+        with self.engine.begin() as c:
+            c.exec_driver_sql("UPDATE deportista SET apellidos='Zeta' WHERE dni='D1'")
+            c.exec_driver_sql("UPDATE deportista SET apellidos='Alfa' WHERE dni='D2'")
+        self.assertEqual(self.leer(limite=1)[0]['dni'],'D1')
+        self.assertEqual(self.leer(limite=1,orden='Nombre')[0]['dni'],'D2')
+
+    def test_nivel_pesa_mas_y_la_cuarta_regata_no_inflaciona_el_indice(self):
+        with self.engine.begin() as c:
+            c.exec_driver_sql('DELETE FROM participa_en')
+            for i in range(10,16):
+                c.exec_driver_sql("INSERT INTO competicion(id_competicion,nombre,fecha_inicio,fecha_fin,nivel,id_clase) VALUES (?,?,'2026-05-01','2026-05-02',?,2)",(i,'Regata '+str(i),'Internacional' if i==10 else 'Nacional'))
+                c.exec_driver_sql('INSERT INTO participa_en(id_unidad,id_competicion,posicion_general,puntos) VALUES (?,?,?,1)',(3 if i==10 else 2,i,4 if i==10 else 1))
+        filas={r['dni']:r for r in self.leer()}
+        # D1 tiene una internacional más las cinco nacionales, D2 solo nacionales.
+        self.assertAlmostEqual(float(filas['D1']['indice_resultados']),575)
+        self.assertAlmostEqual(float(filas['D2']['indice_resultados']),175)
+        self.assertEqual(filas['D2']['resultados_valorados'],3)
+
+    def test_empate_deportivo_tiene_orden_estable_y_fichas_sin_resultados_cero(self):
+        filas=self.leer(clases=['420'])
+        self.assertEqual([r['dni'] for r in filas],['D1','D2'])
+        with self.engine.begin() as c:c.exec_driver_sql("INSERT INTO deportista(dni,nombre,apellidos) VALUES ('D3','Zoe','Sin resultados')")
+        sin=self.leer()[-1]
+        self.assertEqual((sin['dni'],sin['indice_resultados'],sin['resultados_valorados']),('D3',0,0))
+
+    def test_desempate_usa_el_mejor_resultado_individual(self):
+        with self.engine.begin() as c:
+            c.exec_driver_sql('DELETE FROM participa_en')
+            c.exec_driver_sql("INSERT INTO unidad_competitiva(id_unidad,id_clase,fecha_inicio) VALUES (4,2,'2026-01-01')")
+            c.exec_driver_sql("INSERT INTO forma_parte(dni_deportista,id_unidad,rol) VALUES ('D2',4,'Patron')")
+            for i,nivel,unidad,puesto in ((10,'Internacional',3,64),(11,'Nacional',4,1),(12,'Nacional',4,4)):
+                c.exec_driver_sql("INSERT INTO competicion(id_competicion,nombre,fecha_inicio,fecha_fin,nivel,id_clase) VALUES (?,?,'2026-05-01','2026-05-02',?,2)",(i,'Prueba '+str(i),nivel))
+                c.exec_driver_sql('INSERT INTO participa_en(id_unidad,id_competicion,posicion_general,puntos) VALUES (?,?,?,1)',(unidad,i,puesto))
+        filas=self.leer()
+        self.assertEqual([r['dni'] for r in filas],['D1','D2'])
+        self.assertEqual([r['indice_resultados'] for r in filas],[125,125])
+        self.assertEqual([r['mejor_valor'] for r in filas],[125,100])
+
+    def test_nuevos_filtros_rechazan_argumentos_inseguros_o_invalidos(self):
+        for cambios in (dict(clases='420'),dict(clases=[1]),dict(solo_activas=1),
+                dict(desde_resultados='2026-01-01'),dict(desde_resultados=date(2027,1,1)),
+                dict(orden='1; DROP TABLE deportista'),dict(clase='420',clases=['Optimist'])):
             with self.subTest(cambios=cambios),self.assertRaises(ValueError):self.leer(**cambios)
 
     def test_resumen_no_suma_puntos_ni_mezcla_clases_niveles_o_futuro(self):

@@ -5,33 +5,38 @@ from services import seguimiento
 from app import candidatos
 
 
-def mostrar_lista(filas,fecha):
+def mostrar_lista(filas,fecha,*,orden='Resultados ponderados',desde=None,clases=()):
     st.subheader('Explorar regatistas')
-    orden=st.selectbox('Ordenar exploración',['Actividad reciente','Participaciones nacionales e internacionales','Nombre','Nacimiento pendiente'],key='consulta_orden')
-    def nombre(p):return ((p.get('apellidos') or '').casefold(),p['nombre'].casefold(),p['dni'])
-    if orden=='Actividad reciente':
-        filas=sorted(filas,key=lambda p:(-(p.get('ultima_regata').toordinal() if p.get('ultima_regata') else 0),nombre(p)))
-    elif orden=='Participaciones nacionales e internacionales':
-        filas=sorted(filas,key=lambda p:(-((p.get('nacionales') or 0)+(p.get('internacionales') or 0)),nombre(p)))
-    elif orden=='Nacimiento pendiente':
-        filas=sorted(filas,key=lambda p:(p.get('fecha_nacimiento') is not None,nombre(p)))
-    else:
-        filas=sorted(filas,key=nombre)
+    # La base ordena antes del límite; no reordenar aquí un subconjunto alfabético.
+    with st.expander('Cómo se ordenan los resultados'):
+        st.write('Cada resultado recibe 1.000 puntos de índice si es internacional, 100 si es nacional y 10 si es autonómico, divididos entre la raíz cuadrada del puesto general. Los tres mejores aportan el 100 %, 50 % y 25 % de su valor.')
+        st.write('En empate se compara el mejor resultado individual, después el mejor puesto internacional, nacional y autonómico, y finalmente la fecha más reciente. Si persiste, se usa un identificador estable sin atribuir superioridad deportiva.')
+        st.caption('Ejemplo: un 4.º internacional aporta 500; un 1.º nacional, 100; un 1.º autonómico, 10. No se suman los puntos publicados por regatas distintas. Las participaciones sin puesto no puntúan.')
+    contexto=('Desde '+desde.strftime('%d/%m/%Y')) if desde else 'Todo el historial'
+    st.caption(contexto+' hasta '+fecha.strftime('%d/%m/%Y')+' · '+(', '.join(clases) if clases else 'Todas las clases')+'.')
     st.caption(f'{len(filas)} fichas · {sum(p.get("fecha_nacimiento") is None for p in filas)} sin fecha de nacimiento. Selecciona debajo un regatista para abrir su historial.')
     marco=pd.DataFrame([{
-        'Regatista':p['nombre']+' '+p['apellidos'],'Club':p.get('club') or 'Sin club',
+        'Regatista':p['nombre']+' '+p['apellidos'],
+        'Índice de resultados':round(float(p.get('indice_resultados') or 0),2),
+        'Resultados valorados':p.get('resultados_valorados',0),'Club':p.get('club') or 'Sin club',
         'Federación':p.get('federacion') or 'Sin federación',
         'Año nacimiento':p['fecha_nacimiento'].year if p.get('fecha_nacimiento') else None,
         'Edad':candidatos.edad_en_medicion(p.get('fecha_nacimiento'),fecha),
+        'Clases de su trayectoria':p.get('clases_navegadas') or p.get('clases_activas') or 'Sin trayectoria registrada',
         'Clases activas':p.get('clases_activas') or 'Sin unidad activa',
         'Regatas':p.get('participaciones',0),'Nacionales':p.get('nacionales',0),
-        'Internacionales':p.get('internacionales',0),'Mejor nacional':p.get('mejor_nacional'),
+        'Internacionales':p.get('internacionales',0),'Mejor autonómico':p.get('mejor_autonomico'),'Mejor nacional':p.get('mejor_nacional'),
         'Mejor internacional':p.get('mejor_internacional'),'Última regata':p.get('ultima_regata'),
     } for p in filas])
-    for col in ('Año nacimiento','Regatas','Nacionales','Internacionales','Mejor nacional','Mejor internacional'):
+    for col in ('Año nacimiento','Regatas','Nacionales','Internacionales','Mejor nacional','Mejor internacional','Mejor autonómico','Resultados valorados'):
         marco[col]=pd.to_numeric(marco[col],errors='coerce').astype('Int64')
-    st.dataframe(marco,hide_index=True,width='stretch')
-    st.caption('Los recuentos y mejores puestos abarcan el historial hasta la fecha consultada, también al filtrar por clase activa. Los puestos dependen de la clase y la competición: no son un ranking de talento. Usa el año de nacimiento para comparar edades similares.')
+    detalle=st.checkbox('Mostrar todas las columnas deportivas',key='consulta_detalle_deportivo')
+    columnas=None if detalle else ['Regatista','Índice de resultados','Año nacimiento','Club',
+        'Clases de su trayectoria','Clases activas','Mejor internacional','Mejor nacional','Regatas']
+    st.dataframe(marco,hide_index=True,width='stretch',column_order=columnas,
+        column_config={'Índice de resultados':st.column_config.NumberColumn(format='%.2f',
+            help='Tres mejores resultados ponderados por nivel y puesto dentro del periodo y las clases seleccionados.')})
+    st.caption('El índice, los recuentos y los mejores puestos usan el periodo y las clases seleccionados. Cada competición cuenta una vez por regatista; en dobles ambos miembros comparten el resultado. Es un orden de resultados registrados, no una estimación del talento: no ajusta por edad, tamaño de flota ni calidad de participantes. Usa los años de nacimiento para comparar edades similares.')
     return filas
 
 
