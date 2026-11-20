@@ -73,4 +73,21 @@ class PruebasServicio(unittest.TestCase):
         s.actualizar_deportista(self.e,{**original,'nombre':'Actualizado'},original)
         self.assertEqual(self.leer()['nombre'],'Actualizado')
 
+    def test_completar_nacimiento_conserva_campos_e_historial_y_detecta_conflicto(self):
+        s.crear_deportista(self.e,{**self.base,'fecha_nacimiento':None})
+        with self.e.begin() as c:c.exec_driver_sql("INSERT INTO historial VALUES ('PRUEBA-001','dato')")
+        s.actualizar_nacimiento(self.e,'PRUEBA-001',date(2012,1,4))
+        self.assertEqual(self.original()['fecha_nacimiento'],date(2012,1,4))
+        self.assertEqual(self.leer()['nombre'],'Ana')
+        with self.e.connect() as c:self.assertEqual(c.exec_driver_sql('SELECT dni FROM historial').scalar_one(),'PRUEBA-001')
+        with self.assertRaises(s.ConflictoError):s.actualizar_nacimiento(self.e,'PRUEBA-001',date(2013,1,4))
+        self.assertEqual(self.original()['fecha_nacimiento'],date(2012,1,4))
+
+    def test_nacimiento_no_se_infiere_y_rechaza_fechas_invalidas(self):
+        s.crear_deportista(self.e,{**self.base,'fecha_nacimiento':None})
+        for nacimiento in (None,'2012-01-01',date.today()+timedelta(days=1),date(1899,1,1)):
+            with self.subTest(nacimiento=nacimiento),self.assertRaises(s.ValidacionError):
+                s.actualizar_nacimiento(self.e,'PRUEBA-001',nacimiento)
+        self.assertIsNone(self.original()['fecha_nacimiento'])
+
 if __name__=='__main__':unittest.main(verbosity=2)

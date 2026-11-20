@@ -2,7 +2,7 @@
 from datetime import date
 import secrets
 
-from sqlalchemy import text
+from sqlalchemy import Date, bindparam, text
 from sqlalchemy.exc import IntegrityError
 
 
@@ -144,5 +144,31 @@ def guardar_en_proveedor(proveedor, campos, original=None):
         if original is None:
             return crear_deportista(motor, campos)
         return actualizar_deportista(motor, campos, original)
+    finally:
+        motor.dispose()
+
+
+def actualizar_nacimiento(engine, dni, nacimiento, anterior=None):
+    """Completa solo la fecha, sin sobrescribir nombre, club, documento ni historial."""
+    if not isinstance(dni,str) or not dni.strip() or len(dni)>20:
+        raise ValidacionError('Selecciona una ficha válida.')
+    if type(nacimiento) is not date or not date(1900,1,1)<=nacimiento<=date.today():
+        raise ValidacionError('Introduce una fecha de nacimiento completa, válida y no futura.')
+    if anterior is not None and type(anterior) is not date:
+        raise ValidacionError('Recarga la fecha original de la ficha.')
+    sentencia=text('''UPDATE public.deportista SET fecha_nacimiento=:nacimiento
+        WHERE dni=:dni AND fecha_nacimiento IS NOT DISTINCT FROM :anterior''').bindparams(
+            bindparam('nacimiento',type_=Date()),bindparam('anterior',type_=Date()))
+    with engine.begin() as c:
+        if c.execute(sentencia,dict(dni=dni,nacimiento=nacimiento,anterior=anterior)).rowcount!=1:
+            raise ConflictoError('La fecha cambió o la ficha ya no existe. Actualiza los datos antes de guardar.')
+    return dni
+
+
+def guardar_nacimiento_en_proveedor(proveedor,dni,nacimiento,anterior=None):
+    from database.database import crear_engine
+    motor=crear_engine(proveedor)
+    try:
+        return actualizar_nacimiento(motor,dni,nacimiento,anterior)
     finally:
         motor.dispose()

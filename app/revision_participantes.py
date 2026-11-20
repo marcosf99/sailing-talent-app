@@ -107,6 +107,9 @@ def _mostrar(proveedor, motor, lectura, pantalla):
         st.success(mensaje)
     if st.button('Actualizar revisión', key='revision_actualizar'):
         st.session_state['lecturas'] = {}
+        for clave in list(st.session_state):
+            if clave.startswith('revision_guiada_evento_'+proveedor+'_'):
+                st.session_state.pop(clave,None)
     pagina = int(st.number_input('Página de borradores', min_value=1, value=1, key='revision_pagina'))
     try:
         lista = lectura((proveedor, 'revision_borradores', pagina), borradores.listar_borradores, motor, 50, (pagina - 1) * 50)
@@ -131,6 +134,24 @@ def _mostrar(proveedor, motor, lectura, pantalla):
         return
     imp = revision['importacion']
     personas = revision['participantes_revision']
+    with st.expander('Herramientas avanzadas'):
+        detallada=st.checkbox('Mostrar revisión detallada',key='revision_interfaz_detallada')
+        st.caption('Para corregir identidades ya confirmadas, editar roles en tablas o consultar los datos originales de todo el borrador.')
+    if not detallada:
+        from app import revision_guiada
+        editable=imp['estado'] in ('recibida','extraida','en_revision','parcialmente_importada')
+        completa=all(imp.get(c) for c in ('nombre_competicion_propuesto','fecha_inicio_propuesta','fecha_fin_propuesta')) and imp.get('tipo_clasificacion') in ('provisional','definitiva')
+        titulo=imp.get('nombre_competicion_propuesto') or imp.get('nombre_archivo') or 'Clasificación'
+        st.subheader(titulo)
+        st.caption(f'{imp["nombre_clase"]} · {imp.get("nivel") or "Nivel pendiente"}')
+        with st.expander('Datos de la regata',expanded=not completa):
+            datos_regata=_campos_regata(imp,f'revision_guiada_evento_{proveedor}_{identificador}_',disabled=not editable)
+        caso=revision_guiada.mostrar(proveedor,motor,lectura,revision,clubes,datos_regata,
+            lambda mensaje:_exito(mensaje,pantalla))
+        if caso is not None:
+            _completar_faltantes(proveedor,revision,pantalla,solo_filas={caso['fila']})
+            _revision_individual(proveedor,motor,lectura,revision,clubes,federaciones,datos_regata,pantalla,solo_ids=caso['participantes'])
+        return
     confirmados = sum(p['dni_deportista_confirmado'] is not None for p in personas)
     columnas = st.columns(3)
     for col, nombre, numero in zip(columnas, ['Participantes seleccionados', 'Identidades confirmadas', 'Pendientes'],
@@ -149,33 +170,23 @@ def _mostrar(proveedor, motor, lectura, pantalla):
                                     'Nombre en la fuente': p['nombre_original'], 'Club en la fuente': p['club_original'],
                                     'Documento confirmado': p['dni_deportista_confirmado'], 'Estado': p['estado']}
                                    for p in personas]), hide_index=True, width='stretch')
-    incompletas = []
-    for fila in revision['seleccionadas']:
-        presentes = {p['orden_en_tripulacion'] for p in personas if p['id_fila'] == fila['id_fila']}
-        huecos = [n for n in range(1, imp['numero_tripulantes'] + 1) if n not in presentes]
-        if huecos and fila['estado'] != 'importada':
-            incompletas.append((fila, huecos))
-    if incompletas:
-        with st.expander('Completar participantes que faltan', expanded=True):
-            por_fila = {f['id_fila']: (f, huecos) for f, huecos in incompletas}
-            fila_id = st.selectbox('Embarcación incompleta', list(por_fila), key=f'revision_fila_{identificador}',
-                                   format_func=lambda i: f'Puesto {por_fila[i][0]["posicion_general"] or "sin confirmar"} · {por_fila[i][0]["numero_vela_original"] or "Sin vela"}')
-            hueco = st.selectbox('Miembro por incorporar', por_fila[fila_id][1], key=f'revision_hueco_{fila_id}')
-            nombre = st.text_input('Nombre completo tal como aparece en la clasificación', key=f'revision_falta_nombre_{fila_id}_{hueco}')
-            if st.button('Añadir participante pendiente', disabled=not editable, key='revision_agregar'):
-                try:
-                    servicio.agregar_en_proveedor(proveedor, fila_id, nombre, hueco)
-                except (servicio.ValidacionError, servicio.ConflictoError) as error:
-                    st.error(str(error))
-                except ERRORES:
-                    st.error('No se pudo confirmar la incorporación. Actualiza la revisión antes de reintentar.')
-                else:
-                    _exito('Participante añadido a la revisión. Su ficha definitiva todavía está pendiente.', pantalla)
+    _completar_faltantes(proveedor,revision,pantalla)
     datos_pendientes.mostrar(proveedor,motor,lectura)
     if not st.checkbox('Revisar una identidad individual · coincidencias dudosas o correcciones', key='revision_mostrar_individual'):
         return
-    solo_pendientes = st.checkbox('Mostrar solo identidades pendientes', value=True, key=f'revision_solo_pendientes_{identificador}')
-    visibles = [p for p in personas if not solo_pendientes or p['dni_deportista_confirmado'] is None]
+    _revision_individual(proveedor,motor,lectura,revision,clubes,federaciones,datos_regata,pantalla)
+
+
+def _revision_individual(proveedor,motor,lectura,revision,clubes,federaciones,datos_regata,pantalla,solo_ids=None):
+    imp=revision['importacion']
+    personas=revision['participantes_revision']
+    identificador=imp['id_importacion']
+    editable=imp['estado'] in ('recibida','extraida','en_revision','parcialmente_importada')
+    if solo_ids is None:
+        solo_pendientes = st.checkbox('Mostrar solo identidades pendientes', value=True, key=f'revision_solo_pendientes_{identificador}')
+        visibles = [p for p in personas if not solo_pendientes or p['dni_deportista_confirmado'] is None]
+    else:
+        visibles=[p for p in personas if p['id_participante_importado'] in solo_ids]
     if not visibles:
         st.info('No quedan participantes con este filtro. Si faltan miembros, completa las embarcaciones indicadas arriba.')
         return
@@ -301,19 +312,20 @@ def _mostrar(proveedor, motor, lectura, pantalla):
         campos['rol_propuesto'] = st.selectbox('Rol en la embarcación', roles, index=roles.index(p['rol_propuesto']),
                                               format_func=lambda r: {'Patron': 'Patrón', 'Tripulante': 'Tripulante'}.get(r, 'Sin confirmar'),
                                               key=prefijo + 'rol', disabled=not editable)
-    campos['observaciones_revision'] = st.text_area('Observaciones de la revisión', value=p['observaciones_revision'] or '', key=prefijo + 'notas', disabled=not editable)
-    if accion in ('crear','vincular'):
-        st.caption('Recordar decisiones de nombres es opcional y requiere un club de la fuente identificado. Puedes vincular sin él; si quieres recordarlas, resuelve antes el club en Resolver clubes del documento.')
-        recordar=st.checkbox('Recordar este nombre como variante de la ficha confirmada',key=prefijo+'recordar_nombre_'+str(elegido)+'_'+str(campos['id_club']),disabled=not editable or campos['id_club'] is None)
-        descartables={c['dni']:c for c in candidatos if c['dni']!=elegido}
-        clave_descartes=prefijo+'descartar_nombres'
-        if clave_descartes in st.session_state and any(d not in descartables for d in st.session_state[clave_descartes]):
-            st.session_state.pop(clave_descartes,None)
-        descartados=st.multiselect('Fichas similares que confirmo que son otras personas',list(descartables),
-            format_func=lambda d:descartables[d]['nombre']+' '+descartables[d]['apellidos'],
-            key=clave_descartes,disabled=not editable or campos['id_club'] is None)
-        if recordar:campos['recordar_nombre']=True
-        if descartados:campos['descartar_dnis']=descartados
+    with st.expander('Notas y decisiones para próximas clasificaciones'):
+        campos['observaciones_revision'] = st.text_area('Observaciones de la revisión', value=p['observaciones_revision'] or '', key=prefijo + 'notas', disabled=not editable)
+        if accion in ('crear','vincular'):
+            st.caption('Recordar decisiones de nombres es opcional y requiere un club de la fuente identificado. Puedes vincular sin él; si quieres recordarlas, resuelve antes el club en Resolver clubes del documento.')
+            recordar=st.checkbox('Recordar este nombre como variante de la ficha confirmada',key=prefijo+'recordar_nombre_'+str(elegido)+'_'+str(campos['id_club']),disabled=not editable or campos['id_club'] is None)
+            descartables={c['dni']:c for c in candidatos if c['dni']!=elegido}
+            clave_descartes=prefijo+'descartar_nombres'
+            if clave_descartes in st.session_state and any(d not in descartables for d in st.session_state[clave_descartes]):
+                st.session_state.pop(clave_descartes,None)
+            descartados=st.multiselect('Fichas similares que confirmo que son otras personas',list(descartables),
+                format_func=lambda d:descartables[d]['nombre']+' '+descartables[d]['apellidos'],
+                key=clave_descartes,disabled=not editable or campos['id_club'] is None)
+            if recordar:campos['recordar_nombre']=True
+            if descartados:campos['descartar_dnis']=descartados
     miembros = resultados.miembros_fila(revision, fila)
     automatico = accion in ('crear', 'vincular')
     campos_regata = None
@@ -352,3 +364,33 @@ def _mostrar(proveedor, motor, lectura, pantalla):
                 _exito({'crear': 'Deportista creado y vinculado a la clasificación.',
                     'vincular': 'Ficha existente vinculada al participante.',
                     'pendiente': 'Datos guardados. El participante continúa pendiente.'}[accion], pantalla)
+
+
+def _completar_faltantes(proveedor,revision,pantalla,solo_filas=None):
+    imp=revision['importacion']
+    personas=revision['participantes_revision']
+    identificador=imp['id_importacion']
+    editable=imp['estado'] in ('recibida','extraida','en_revision','parcialmente_importada')
+    incompletas = []
+    for fila in revision['seleccionadas']:
+        if solo_filas is not None and fila['id_fila'] not in solo_filas:continue
+        presentes = {p['orden_en_tripulacion'] for p in personas if p['id_fila'] == fila['id_fila']}
+        huecos = [n for n in range(1, imp['numero_tripulantes'] + 1) if n not in presentes]
+        if huecos and fila['estado'] != 'importada':
+            incompletas.append((fila, huecos))
+    if incompletas:
+        with st.expander('Completar participantes que faltan', expanded=True):
+            por_fila = {f['id_fila']: (f, huecos) for f, huecos in incompletas}
+            fila_id = st.selectbox('Embarcación incompleta', list(por_fila), key=f'revision_fila_{identificador}',
+                                   format_func=lambda i: f'Puesto {por_fila[i][0]["posicion_general"] or "sin confirmar"} · {por_fila[i][0]["numero_vela_original"] or "Sin vela"}')
+            hueco = st.selectbox('Miembro por incorporar', por_fila[fila_id][1], key=f'revision_hueco_{fila_id}')
+            nombre = st.text_input('Nombre completo tal como aparece en la clasificación', key=f'revision_falta_nombre_{fila_id}_{hueco}')
+            if st.button('Añadir participante pendiente', disabled=not editable, key='revision_agregar'):
+                try:
+                    servicio.agregar_en_proveedor(proveedor, fila_id, nombre, hueco)
+                except (servicio.ValidacionError, servicio.ConflictoError) as error:
+                    st.error(str(error))
+                except ERRORES:
+                    st.error('No se pudo confirmar la incorporación. Actualiza la revisión antes de reintentar.')
+                else:
+                    _exito('Participante añadido a la revisión. Su ficha definitiva todavía está pendiente.', pantalla)
