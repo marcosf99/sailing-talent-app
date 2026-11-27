@@ -834,3 +834,49 @@ previa se pide actualizar la revisión. **Herramientas avanzadas → Mostrar rev
 detallada** conserva los controles anteriores. Este flujo no requiere migraciones
 adicionales. Pruebas: `test_revision_rapida.py` y
 `test_revision_guiada_interfaz.py`.
+
+### Exploración multiclase y orden por resultados
+
+La pantalla inicial permite marcar varias clases en una barra de botones. El
+filtro usa **cualquiera** de las clases seleccionadas; sin selección incluye
+todas. Se puede consultar toda la trayectoria o solo unidades activas a la fecha
+de consulta. Los botones y el periodo se aplican inmediatamente; los campos del
+formulario se aplican con Buscar. El historial individual permanece completo.
+
+El orden inicial es **Resultados ponderados**, dentro de los últimos 24 meses.
+También se puede elegir el año natural de consulta o todo el historial. El índice
+se calcula exclusivamente sobre resultados del periodo y las clases seleccionados:
+
+- Valor por regata: peso del nivel dividido entre la raíz cuadrada del puesto
+  general. Pesos iniciales: internacional 1.000, nacional 100, autonómico 10.
+- Aportan los tres mejores valores, con factores 1, 0,5 y 0,25. Una cuarta regata
+  puede mejorar el índice reemplazando una de las anteriores, pero no se suma.
+- En empate: mejor valor individual, mejor puesto internacional, nacional,
+  autonómico y fecha más reciente. El identificador deshace un empate persistente
+  únicamente para mantener estable la lista, sin significado deportivo.
+- Cada competición cuenta una vez por persona, aunque tenga varias unidades.
+  Ambos miembros de una embarcación comparten resultado. Sin puesto no se puntúa.
+
+Un 4.º internacional aporta 500, un 1.º nacional 100 y un 1.º autonómico 10 antes
+del factor por orden. No se usan los puntos publicados por regatas distintas como
+una escala común. El índice es una propuesta de ordenación descriptiva, no un
+modelo validado de talento: no ajusta por edad, tamaño de flota ni nivel real de
+los rivales. Las fichas sin resultados quedan visibles con índice cero.
+
+La base filtra, agrega y ordena en una consulta antes del límite de 500 fichas.
+El usuario puede escoger otros órdenes; la vista compacta deja las columnas
+adicionales disponibles en Mostrar todas las columnas deportivas. No hay cambios
+de esquema ni escrituras en bases de datos para esta funcionalidad.
+
+### Navegación horizontal
+
+El menú principal aparece en la cabecera a lo ancho de la aplicación. Consulta de
+regatistas y Candidatos y comparación tienen acceso directo; Gestión deportiva
+agrupa fichas, calidad, mediciones, unidades e informes. Clasificaciones reúne
+la importación y la revisión de participantes. Se conservan las direcciones de
+cada pantalla y el funcionamiento de sus formularios.
+
+La conexión, la fecha de consulta y Actualizar datos están en **Ajustes de
+consulta**, un apartado plegable sobre el contenido. La conexión y la fecha
+vigentes se muestran debajo. No se utiliza una barra lateral ni estilos que
+oculten los controles nativos; la navegación usa `st.navigation(position="top")`.

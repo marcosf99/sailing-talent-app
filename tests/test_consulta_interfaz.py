@@ -4,6 +4,7 @@ from decimal import Decimal
 import os
 import unittest
 from unittest.mock import patch
+import streamlit as st
 
 from streamlit.testing.v1 import AppTest
 from app import datos
@@ -40,6 +41,21 @@ class TestInterfaz(unittest.TestCase):
         self.addCleanup(lambda:[p.stop() for p in reversed(self.patches)])
         self.app=AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'app' / 'main.py'),default_timeout=15)
 
+    def test_navegacion_superior_conserva_paginas_y_ajustes_sin_barra_lateral(self):
+        with patch.object(st,'navigation',wraps=st.navigation) as navegacion:
+            at=self.app.run()
+        self.assertEqual(len(at.exception),0)
+        grupos=navegacion.call_args.args[0]
+        self.assertEqual(navegacion.call_args.kwargs['position'],'top')
+        self.assertEqual(list(grupos),['','Gestión deportiva','Clasificaciones'])
+        self.assertEqual([p.title for p in grupos['']],['Consulta de regatistas','Candidatos y comparación'])
+        self.assertEqual([p.url_path for p in grupos['Clasificaciones']],['importar-clasificaciones','revision-participantes'])
+        self.assertEqual(sum(len(p) for p in grupos.values()),9)
+        self.assertEqual(len(at.sidebar.selectbox),0)
+        self.assertEqual(len(at.sidebar.button),0)
+        self.assertTrue(any(e.label=='Ajustes de consulta' for e in at.expander))
+        self.assertEqual(at.selectbox(key='proveedor').value,'supabase')
+
     def test_ficha_tablas_y_grafico(self):
         at=self.app.run()
         self.assertEqual(len(at.exception),0)
@@ -60,7 +76,7 @@ class TestInterfaz(unittest.TestCase):
     def test_busqueda_sin_resultados(self):
         at=self.app.run()
         at.text_input[0].set_value('no existe')
-        # El primer botón de main es submit; el de sidebar es Actualizar datos.
+        # Buscar aplica los campos del formulario; Actualizar datos recarga las lecturas.
         next(b for b in at.button if b.label=='Buscar').click().run()
         self.assertEqual(len(at.exception),0)
         self.assertTrue(any('No se han encontrado' in i.value for i in at.info))
@@ -126,6 +142,41 @@ class TestInterfaz(unittest.TestCase):
         self.assertEqual(at.selectbox(key='regatista').value,'STDEMO0004')
         self.assertEqual(len(at.dataframe[0].value),1)
         self.assertTrue(any('es prioritaria' in w.value for w in at.warning))
+
+    def test_barra_multiclase_filtra_sin_pulsar_buscar_y_vacia_significa_todas(self):
+        with patch.object(datos,'cargar_clases',return_value=[dict(nombre=n) for n in ('420','ILCA 4','Optimist')]),patch.object(datos,'buscar',side_effect=buscar) as consulta:
+            at=self.app.run()
+            barra=next(b for b in at.get('button_group') if b.key=='consulta_clases')
+            self.assertEqual([o.content for o in barra.options],['Optimist','ILCA 4','420'])
+            barra.set_value(['Optimist','420']).run()
+            self.assertEqual(len(at.exception),0)
+            self.assertEqual(consulta.call_args.kwargs['clases'],('Optimist','420'))
+            self.assertFalse(consulta.call_args.kwargs['solo_activas'])
+            at.radio(key='consulta_ambito_clases').set_value('Solo clases activas').run()
+            self.assertTrue(consulta.call_args.kwargs['solo_activas'])
+            next(b for b in at.get('button_group') if b.key=='consulta_clases').set_value([]).run()
+            self.assertEqual(consulta.call_args.kwargs['clases'],())
+
+    def test_orden_ponderado_predeterminado_y_periodo_llegan_a_la_consulta(self):
+        with patch.object(datos,'buscar',side_effect=buscar) as consulta:
+            at=self.app.run()
+            self.assertEqual(at.selectbox(key='consulta_orden').value,'Resultados ponderados')
+            self.assertIsInstance(consulta.call_args.kwargs['desde_resultados'],date)
+            self.assertIn('Índice de resultados',at.dataframe[0].value.columns)
+            at.selectbox(key='consulta_periodo').set_value('Todo el historial').run()
+            self.assertIsNone(consulta.call_args.kwargs['desde_resultados'])
+            at.selectbox(key='consulta_orden').set_value('Nombre').run()
+            self.assertEqual(consulta.call_args.kwargs['orden'],'Nombre')
+            self.assertEqual(len(at.exception),0)
+
+    def test_lista_respeta_el_orden_de_la_base_y_describe_la_ponderacion(self):
+        def invertida(*args,**kwargs):return list(reversed(buscar(*args,**kwargs)))
+        with patch.object(datos,'buscar',side_effect=invertida):
+            at=self.app.run()
+            self.assertEqual(at.selectbox(key='regatista').value,'STDEMO0004')
+            self.assertEqual(at.dataframe[0].value.iloc[0]['Regatista'],'Iago Rey Blanco')
+            self.assertTrue(any('4.º internacional aporta 500' in c.value for c in at.caption))
+            self.assertFalse(at.checkbox(key='consulta_detalle_deportivo').value)
 
     def test_completar_nacimiento_solo_al_guardar_y_refresca_edad(self):
         from services import deportistas
