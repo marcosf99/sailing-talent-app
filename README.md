@@ -867,3 +867,16 @@ La base filtra, agrega y ordena en una consulta antes del límite de 500 fichas.
 El usuario puede escoger otros órdenes; la vista compacta deja las columnas
 adicionales disponibles en Mostrar todas las columnas deportivas. No hay cambios
 de esquema ni escrituras en bases de datos para esta funcionalidad.
+
+### Navegación horizontal
+
+El menú principal aparece en la cabecera a lo ancho de la aplicación. Consulta de
+regatistas y Candidatos y comparación tienen acceso directo; Gestión deportiva
+agrupa fichas, calidad, mediciones, unidades e informes. Clasificaciones reúne
+la importación y la revisión de participantes. Se conservan las direcciones de
+cada pantalla y el funcionamiento de sus formularios.
+
+La conexión, la fecha de consulta y Actualizar datos están en **Ajustes de
+consulta**, un apartado plegable sobre el contenido. La conexión y la fecha
+vigentes se muestran debajo. No se utiliza una barra lateral ni estilos que
+oculten los controles nativos; la navegación usa `st.navigation(position="top")`.

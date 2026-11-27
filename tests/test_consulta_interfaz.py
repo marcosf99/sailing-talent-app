@@ -4,6 +4,7 @@ from decimal import Decimal
 import os
 import unittest
 from unittest.mock import patch
+import streamlit as st
 
 from streamlit.testing.v1 import AppTest
 from app import datos
@@ -40,6 +41,21 @@ class TestInterfaz(unittest.TestCase):
         self.addCleanup(lambda:[p.stop() for p in reversed(self.patches)])
         self.app=AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'app' / 'main.py'),default_timeout=15)
 
+    def test_navegacion_superior_conserva_paginas_y_ajustes_sin_barra_lateral(self):
+        with patch.object(st,'navigation',wraps=st.navigation) as navegacion:
+            at=self.app.run()
+        self.assertEqual(len(at.exception),0)
+        grupos=navegacion.call_args.args[0]
+        self.assertEqual(navegacion.call_args.kwargs['position'],'top')
+        self.assertEqual(list(grupos),['','Gestión deportiva','Clasificaciones'])
+        self.assertEqual([p.title for p in grupos['']],['Consulta de regatistas','Candidatos y comparación'])
+        self.assertEqual([p.url_path for p in grupos['Clasificaciones']],['importar-clasificaciones','revision-participantes'])
+        self.assertEqual(sum(len(p) for p in grupos.values()),9)
+        self.assertEqual(len(at.sidebar.selectbox),0)
+        self.assertEqual(len(at.sidebar.button),0)
+        self.assertTrue(any(e.label=='Ajustes de consulta' for e in at.expander))
+        self.assertEqual(at.selectbox(key='proveedor').value,'supabase')
+
     def test_ficha_tablas_y_grafico(self):
         at=self.app.run()
         self.assertEqual(len(at.exception),0)
@@ -60,7 +76,7 @@ class TestInterfaz(unittest.TestCase):
     def test_busqueda_sin_resultados(self):
         at=self.app.run()
         at.text_input[0].set_value('no existe')
-        # El primer botón de main es submit; el de sidebar es Actualizar datos.
+        # Buscar aplica los campos del formulario; Actualizar datos recarga las lecturas.
         next(b for b in at.button if b.label=='Buscar').click().run()
         self.assertEqual(len(at.exception),0)
         self.assertTrue(any('No se han encontrado' in i.value for i in at.info))

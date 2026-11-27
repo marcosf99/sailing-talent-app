@@ -127,23 +127,23 @@ def configuracion():
     if inicial not in opciones:
         inicial = "supabase"
 
-    with st.sidebar:
-        st.header("Sailing Talent")
-        proveedor = st.selectbox(
+    with st.expander('Ajustes de consulta'):
+        conexion, calendario, acciones = st.columns([1, 1, 1])
+        proveedor = conexion.selectbox(
             "Base de datos", opciones, index=opciones.index(inicial),
             format_func=lambda p: "Supabase" if p == "supabase" else "Google Cloud SQL",
             key="proveedor",
         )
-        fecha = st.date_input(
+        fecha = calendario.date_input(
             "Fecha de consulta", value=date.today(), min_value=date(1900, 1, 1),
             max_value=date.today(), help="Edad, mediciones y resultados se consultan hasta esta fecha.",
         )
-        if st.button("Actualizar datos", width="stretch"):
+        if acciones.button("Actualizar datos", width="stretch"):
             st.session_state["lecturas"] = {}
             st.session_state.pop('edad_revisada_' + proveedor, None)
-        st.caption("Consultas y gestión deportiva.")
         if proveedor == "cloudsql":
             st.caption("Mantén Cloud SQL Auth Proxy abierto en el puerto configurado.")
+    st.caption(f'{"Supabase" if proveedor == "supabase" else "Google Cloud SQL"} · Consulta hasta el {fecha.strftime("%d/%m/%Y")}')
 
     # Evita conservar selecciones y registros de otro proveedor.
     if st.session_state.get("proveedor_anterior") != proveedor:
@@ -379,14 +379,20 @@ def pagina_calidad():
 
 PROVEEDOR, FECHA = configuracion()
 revisar_cierres_por_edad(PROVEEDOR)
-st.navigation([
+st.navigation({
+    "": [
     st.Page(pagina_consulta, title="Consulta de regatistas", default=True),
     st.Page(pagina_candidatos, title="Candidatos y comparación", url_path="candidatos"),
+    ],
+    "Gestión deportiva": [
     st.Page(pagina_gestion, title="Gestión de deportistas", url_path="gestion-deportistas"),
     st.Page(pagina_calidad, title="Calidad de fichas", url_path="calidad-fichas"),
     st.Page(pagina_antropometria, title="Registros antropométricos", url_path="registros-antropometricos"),
     st.Page(pagina_unidades, title="Unidades competitivas", url_path="unidades-competitivas"),
     st.Page(pagina_informes, title="Informes técnicos", url_path="informes-tecnicos"),
+    ],
+    "Clasificaciones": [
     st.Page(pagina_importaciones, title="Importar clasificaciones", url_path="importar-clasificaciones"),
     st.Page(pagina_revision, title="Revisión de participantes", url_path="revision-participantes"),
-]).run()
+    ],
+}, position="top").run()
